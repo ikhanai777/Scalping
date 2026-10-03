@@ -21,7 +21,7 @@ universe:
   radar_min_quote_volume: 2000000   # pairs above this 24h volume are scanned by the pump radar
   radar_max_symbols: 400
   always_include: [BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT]
-  exclude_bases: [USDC, FDUSD, TUSD, USDP, DAI, BUSD, EUR, AEUR, USDE, XUSD, PAXG]
+  exclude_bases: [USDC, FDUSD, TUSD, USDP, DAI, BUSD, EUR, AEUR, USDE, XUSD, PAXG, USD1, RLUSD, BFUSD, USDS, EURI, XAUT]
 
 timeframes:
   trend: ["1m", "5m", "15m", "1h", "4h"]
@@ -75,6 +75,7 @@ coupling:
 
 pump:
   min_move_pct: 1.0
+  min_vol_x: 3.0                # 60s volume must be ≥ 3x its typical level at ignition
   ignition_velocity_z: 4.0
   group_z: 3.0
   confirm_seconds: 60
@@ -96,7 +97,7 @@ risk:
   require_stop: true
 
 execution:
-  mode: paper                   # paper | testnet | live
+  mode: paper                   # v0.1 routes all orders to the paper broker (testnet/live routing not wired yet)
   market: spot                  # spot | futures
   api_key_env: BINANCE_API_KEY
   api_secret_env: BINANCE_API_SECRET

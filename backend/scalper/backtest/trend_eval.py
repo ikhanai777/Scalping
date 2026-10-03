@@ -69,7 +69,12 @@ def run_trends(bars_1m: list[Bar], symbol: str, tfs: list[str], sensitivity: str
 def evaluate(bars_1m: list[Bar], records: list[dict], thr_pct: float, tfs: list[str]) -> dict:
     legs = zigzag(bars_1m, thr_pct)
     days = max((bars_1m[-1].open_time - bars_1m[0].open_time) / 86_400_000, 1e-9) if bars_1m else 1
-    out = {"large_move_threshold_pct": round(thr_pct, 3), "large_moves": len(legs), "days": round(days, 2), "by_tf": {}}
+    span = (bars_1m[-1].open_time - bars_1m[0].open_time) if bars_1m else 1
+    covered = sum(lg["end"][0] - lg["start"][0] for lg in legs)
+    # A random-direction entry at a random time lands inside a same-direction large move with this probability.
+    baseline = round(covered / span / 2, 3) if span else None
+    out = {"large_move_threshold_pct": round(thr_pct, 3), "large_moves": len(legs), "days": round(days, 2),
+           "baseline_precision": baseline, "by_tf": {}}
     for tf in tfs:
         recs = [r for r in records if r["tf"] == tf]
         conf = [r for r in recs if r["confirmed"]]

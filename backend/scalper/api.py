@@ -67,7 +67,8 @@ def create_app(cfg: Cfg, engine: Engine | None = None, start_engine: bool = True
 
     @app.get("/api/signals")
     def signals(limit: int = 200, symbol: str | None = None):
-        return {"active": eng.active_signals(), "recent": eng.store.recent("signals", limit, symbol),
+        recent = [r for r in eng.store.recent("signals", limit, symbol) if "strategy" in r]
+        return {"active": eng.active_signals(), "recent": recent,
                 "rejected": eng.signal_engine.rejected[-100:]}
 
     @app.get("/api/trends")

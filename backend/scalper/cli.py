@@ -91,7 +91,8 @@ def cmd_trends(args, cfg):
                 f = lambda v: "—" if v is None else f"{v:.2f}"   # noqa: E731
                 print(f"  {sens:<13}{tf:>5}{r['confirmed']:>11}{f(r['precision']):>11}{f(r['recall']):>9}"
                       f"{f(r['median_move_remaining_at_confirm']):>11}{r['false_starts_per_day']:>11}")
-        print(f"  ({e['large_moves']} large moves in {e['days']} days)")
+        print(f"  ({e['large_moves']} large moves in {e['days']} days; a random-direction entry would score "
+              f"precision ≈ {e['baseline_precision']})")
 
 
 def cmd_train(args, cfg):
@@ -168,6 +169,7 @@ def main(argv=None):
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     cfg = load_config()
     {"serve": cmd_serve, "backtest": cmd_backtest, "evaluate-trends": cmd_trends, "train": cmd_train,
      "pump-backtest": cmd_pump}[args.cmd](args, cfg)

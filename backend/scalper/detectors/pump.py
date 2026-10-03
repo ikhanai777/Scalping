@@ -130,6 +130,7 @@ class PumpDetector:
     def __init__(self, cfg: dict | None = None, baseline_seconds: int = 1800, warmup_seconds: int = 300):
         c = cfg or {}
         self.min_move_pct = c.get("min_move_pct", 1.0)
+        self.min_vol_x = c.get("min_vol_x", 3.0)
         self.ign_z = c.get("ignition_velocity_z", 4.0)
         self.group_z = c.get("group_z", 3.0)
         self.confirm_s = c.get("confirm_seconds", 60)
@@ -219,6 +220,11 @@ class PumpDetector:
         med, sc = s.base[name]
         return (x - med) / sc
 
+    @staticmethod
+    def _vol_x(s: _Sym) -> float:
+        """Recent volume vs its typical level (fast 15s window or 60s window, whichever is larger)."""
+        return max(s.vol15.get(0) / (s.base["vol15"][0] or 1e-9), s.vol60.get(0) / (s.base["vol60"][0] or 1e-9))
+
     def _atr1m(self, s: _Sym) -> float:
         h, l = s.h.last(900), s.l.last(900)
         k = len(h) // 60
@@ -270,7 +276,8 @@ class PumpDetector:
                 origin = float(origin_idx_prices.min() if d > 0 else origin_idx_prices.max())
                 move = 100 * (c - origin) / origin * d
                 min_move = max(self.min_move_pct, 100 * 3 * sigma * math.sqrt(hbest))
-                if move >= min_move:
+                vol_x = self._vol_x(s)
+                if move >= min_move and vol_x >= self.min_vol_x:
                     out.append(self._ignite(symbol, s, t, bar, d, origin, recent_groups, cat))
                     return out
             if s.stage == "NONE" and (len(recent_groups) >= 1 or (vol_z >= gz and abs(vz) < 1.5)):
@@ -345,11 +352,10 @@ class PumpDetector:
             chase = chase_p
         else:
             chase = min(chase_a, chase_p) if d > 0 else max(chase_a, chase_p)
-        base_v60 = s.base["vol60"][0] or 1e-9
         ev = MoveEvent(id=f"mv_{symbol}_{t}", symbol=symbol, direction=d, stage="IGNITION",
                        origin_ts=t, origin_price=origin, ignition_ts=t, ignition_price=bar.close,
                        ignition_low=bar.low if d > 0 else bar.high, extreme=bar.high if d > 0 else bar.low,
-                       last_price=bar.close, vol_x=s.vol60.get(0) / base_v60, chase_limit=chase,
+                       last_price=bar.close, vol_x=self._vol_x(s), chase_limit=chase,
                        catalyst=cat, features=dict(s.features))
         ev.vwap_pv, ev.vwap_v = bar.close * bar.volume, bar.volume
         # find origin time: scan back for the origin price

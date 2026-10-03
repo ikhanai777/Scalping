@@ -682,7 +682,10 @@ class Engine:
 
     def status(self) -> dict:
         return {"phase": self.phase, "uptime_s": int(time.time() - self.started_at), "market": self.market,
-                "execution_mode": self.cfg.get_path("execution.mode", "paper"),
+                "execution_mode": "paper",
+                "execution_note": (None if self.cfg.get_path("execution.mode", "paper") == "paper" else
+                                   "testnet/live order routing is not wired into the terminal in v0.1 — orders are "
+                                   "paper-simulated. scalper.execution.binance_trader is available for testnet experiments."),
                 "trend_symbols": len(self.trend_syms), "radar_symbols": len(self.radar_syms),
                 "ws": self.ws.status(), "ws_futures": self.ws_fut.status() if self.ws_fut else None,
                 "futures_data": self.futures_ok, "clock_offset_ms": self.clock_offset,

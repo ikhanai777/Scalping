@@ -1,0 +1,12 @@
+services:
+  terminal:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"     # local only; put an authenticated proxy in front before exposing it
+    volumes:
+      - ./data:/app/data           # stats, models, cached history, SQLite
+      - ./config:/app/config       # edit config/local.yaml to override defaults
+    env_file:
+      - path: .env                 # optional: BINANCE_API_KEY / BINANCE_API_SECRET / SCALPER_ALERTS__TELEGRAM_TOKEN ...
+        required: false
+    restart: unless-stopped
