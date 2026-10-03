@@ -67,9 +67,34 @@ distances. In practice this means:
 - Fourteen days is a small sample. Strategy parameters were deliberately **not** tuned to it, because
   that would overfit.
 
+### Strategies on futures: `scalper backtest --market futures --days 60 --save-stats` (6 majors, 2026-08-04 → 2026-10-02)
+
+Futures fees (0.05% taker) plus 2 bps slippage per side, 8,573 trades. The saved statistics are in
+[`results/stats-futures-60d.json`](../results/stats-futures-60d.json). To use them, copy the file to
+`data/stats.json` and set `execution.market: futures`.
+
+| Strategy | Trades | Win rate | Net expectancy | Profit factor | Walk-forward windows positive |
+|---|---|---|---|---|---|
+| S4 liquidity sweep | 332 | 52% | −0.12R | 0.79 | 1/6 |
+| S6 session breakout | 180 | 48% | −0.16R | 0.68 | 2/6 |
+| S3 squeeze breakout | 277 | 48% | −0.17R | 0.71 | 1/6 |
+| S1 trend pullback | 1,171 | 47% | −0.19R | 0.65 | 0/6 |
+| S12 BTC catch-up | 18 | 44% | −0.23R | 0.64 | 2/5 |
+| S9 Supertrend+MACD (baseline) | 4,219 | 36% | −0.23R | 0.46 | 0/6 |
+| S10 Trend Catcher entry | 2,376 | 30% | −0.27R | 0.59 | 1/6 |
+
+None pass the gates. Splitting by timeframe, the gross edge before costs ranges from −0.07R to +0.21R,
+and costs are still 0.10–0.30R per trade at these stop distances. The one positive slice is
+**S4 liquidity sweep on 15m: +0.02R net, 58% win rate, 184 trades**. That is not statistically
+significant, but it is the best candidate for further work. Statistics are currently pooled per
+strategy, not per timeframe, so that slice is still suppressed live.
+
+Trend continuation after CONFIRMED (≥ 2 ATR beyond the confirmation price) was 52–57% across
+timeframes over 60 days.
+
 ## Next steps (suggested order)
 
-1. Run 60–90 day backtests on futures fees, then train the meta-model and compare calibrated vs. raw signals.
+1. Key statistics per strategy × timeframe (so slices like S4-15m can pass on their own), then train the meta-model (`scalper train --market futures`) to filter low-quality setups.
 2. Enable `storage.record_trades` to build order-book/trade history, then backtest S5 and order-flow features.
 3. Add volume profile, footprint and liquidity heatmap to the chart.
 4. Wire the Binance executor behind an explicit testnet-first flow with a confirmation UI.
