@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import math
+import multiprocessing
 import time
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
@@ -395,7 +396,8 @@ class Engine:
         self.backtest_report = {"status": "running", "symbols": syms, "days": days}
         loop = asyncio.get_running_loop()
         try:
-            with ProcessPoolExecutor(max_workers=1) as pool:
+            # "spawn" everywhere = the Windows behaviour, so it is exercised on every platform.
+            with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as pool:
                 res = await loop.run_in_executor(pool, _bootstrap_job, json.loads(json.dumps(self.cfg)), syms, days,
                                                  str(self.ddir))
             for sid, rs in res["by_strategy"].items():

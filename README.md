@@ -45,6 +45,9 @@ cd frontend && npm install && npm run build && cd ..
 scalper serve                    # http://127.0.0.1:8000
 ```
 
+**Windows 10:** step-by-step runbook (written so an AI agent can follow it) in
+[`docs/DEPLOY_WINDOWS_AGENT.md`](docs/DEPLOY_WINDOWS_AGENT.md).
+
 For UI development, run `scalper serve` and `cd frontend && npm run dev` together, then open http://localhost:5173.
 
 The first start takes a minute or two. The terminal backfills history for the trend universe, warms up

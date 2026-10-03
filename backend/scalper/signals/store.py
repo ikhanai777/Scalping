@@ -66,10 +66,10 @@ class StatsStore:
                 "live": {k: v.rs[-5000:] for k, v in self.live.items()},
                 "shadow": self.shadow}
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data))
+        self.path.write_text(json.dumps(data), encoding="utf-8")
 
     def load(self) -> None:
-        data = json.loads(self.path.read_text())
+        data = json.loads(self.path.read_text(encoding="utf-8"))
         for name in ("backtest", "live"):
             book = getattr(self, name)
             for k, rs in data.get(name, {}).items():

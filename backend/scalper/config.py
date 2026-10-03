@@ -52,7 +52,7 @@ def load_config(extra: dict | None = None) -> Cfg:
     for name in ("default.yaml", "local.yaml"):
         p = CONFIG_DIR / name
         if p.exists():
-            data = _merge(data, yaml.safe_load(p.read_text()) or {})
+            data = _merge(data, yaml.safe_load(p.read_text(encoding="utf-8-sig")) or {})
     for key, raw in os.environ.items():
         if not key.startswith("SCALPER_") or "__" not in key:
             continue

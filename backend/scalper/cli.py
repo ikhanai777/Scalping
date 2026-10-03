@@ -167,6 +167,11 @@ def main(argv=None):
     pb.add_argument("--hours", type=float, default=6)
     pb.add_argument("--market", default="spot", choices=["spot", "futures"])
     args = p.parse_args(argv)
+    for stream in (sys.stdout, sys.stderr):      # Windows consoles/pipes may not be UTF-8 (≥, —, emoji)
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
