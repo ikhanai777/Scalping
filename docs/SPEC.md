@@ -41,6 +41,10 @@ be hard-coded or marketing copy.
 - Order-flow tools: depth ladder (DOM), liquidity heatmap, time & sales, cumulative volume delta,
   footprint candles.
 - A news and sentiment feed tagged per coin, with impact scoring and event-based trade blocking.
+- A **Trend Catcher** that detects and marks up/down trends early on every active coin, with each
+  coin's **BTC coupling** (follower / independent, β, lag) shown.
+- A market-wide **Pump & Dump Detector** that flags abnormal moves on any Binance USDT pair within
+  seconds of ignition.
 - Strategy engine, backtester, paper trading, and optional live execution with strict risk controls.
 - Uses only **free** software and **free** data sources. Binance trading fees still apply to real trades.
 
@@ -272,6 +276,9 @@ condition, and a time stop (for example, close after N bars if neither stop nor 
 | S7 | **Liquidation cascade fade / follow** | Liquidation burst above the 99th percentile with ΔOI sharply negative: *fade* when price reaches a high-volume node with absorption; *follow* when the book is thin and OBI agrees | High volatility |
 | S8 | **Funding / positioning extreme** | Extreme funding + crowded long/short ratio + price failing at a level → contrarian bias. Used mainly as a **filter / score input**, not a standalone trigger | Any |
 | S9 | **Supertrend + MACD fast** | Classic, simple baseline, kept as a benchmark that the rest must beat | Trending |
+| S10 | **Trend Catcher entry** | Enter on the `EARLY` → `CONFIRMED` transition of the Trend Catcher (§6.3), or on the first pullback after it. SL = Chandelier/structure stop. Exit with a trailing stop, not a fixed target | Trend onset |
+| S11 | **Pump / dump momentum** | Ride an `IGNITION`/`CONFIRMED` event from the Pump & Dump Detector (§6.5) with a strict chase limit. An optional fade setup on `EXHAUSTION` is off by default | Abnormal moves |
+| S12 | **BTC lead–lag catch-up** | BTC starts a confirmed move. A high-beta follower whose lag is measured as significant (§6.4) has not moved yet → enter in BTC's direction on the follower. Exit when the residual gap closes or BTC's move fails | BTC-driven trends |
 
 ### 6.2 Strategy rules
 - Parameters live in versioned YAML files. Every signal records the strategy version and parameter hash.
@@ -279,12 +286,222 @@ condition, and a time stop (for example, close after N bars if neither stop nor 
 - Ship strategies with **conservative defaults**, and only tune them through walk-forward optimisation,
   never in-sample.
 
+### 6.3 Trend Catcher (all active coins, all timeframes)
+
+**Purpose.** Detect the start of an up or down trend on every active coin as early as possible, show
+it on the chart, and track it until it ends, so large moves can be joined near their beginning
+instead of chased.
+
+**Trade-off to be explicit about.** Detecting earlier means more false starts; detecting later means
+less of the move is left. The detector exposes a **sensitivity** setting (Early / Balanced /
+Conservative) and the UI shows the measured trade-off for each setting (see "Validation" below).
+
+#### 6.3.1 Coverage
+- Runs for every symbol in the active universe (watchlist + scanner universe, default top 100 USDT
+  pairs by volume) on 1m, 5m, 15m, 1h and 4h.
+- Updates on every bar close per timeframe. An intrabar "provisional" state is allowed for display
+  only; signals use closed bars.
+- Budget: 100 symbols × 5 timeframes must update in < 200 ms total per 1m close on a 4-core machine.
+
+#### 6.3.2 Evidence used (each normalised to −1…+1, positive = up)
+| Group | Evidence | Why it catches trends early |
+|---|---|---|
+| Structure | Break of structure: close above the last swing high after a higher low (mirror for down); Donchian 20/55 breakout | Price structure changes before averages turn |
+| Adaptive slope | Kaufman Efficiency Ratio (trend vs. noise), KAMA slope, Kalman-filter slope and its t-statistic, linear-regression slope t-stat over 20/50 bars | Separates real drift from noise with less lag than plain EMAs |
+| Moving-average ribbon | EMA 8/13/21/34/55 order and spread expansion; price vs. EMA 200 on 1h | Ribbon "fanning out" marks trend acceleration |
+| Trend strength | ADX rising through 20→25 with DI+/DI− cross; Supertrend flip | Classic confirmation, used as a later-stage input |
+| Change-point | CUSUM / Bayesian online change-point on returns; volatility breakout from a squeeze (§5.3) | Statistical "something changed" alarm, often the earliest input |
+| Participation | RVOL > 1.5, CVD slope in the same direction, taker buy/sell ratio, bid/ask depth shift | Real trends usually come with volume and aggressor flow |
+| Derivatives | ΔOI in the trend direction (new positions, not just short covering), funding not yet extreme | Fresh positioning supports continuation |
+| Market | BTC/ETH trend state and the coin's coupling to BTC (§6.4); sector trend | Followers rarely sustain a trend against BTC |
+
+#### 6.3.3 Trend score and state machine
+- `trend_score` in −100…+100 per symbol/timeframe = weighted evidence sum. Weights are learned with
+  walk-forward ML (same meta-labelling approach as §7.3), with sensible hand-set defaults.
+- States (separately for up and down):
+
+```
+NONE ──► EARLY ──► CONFIRMED ──► MATURE ──► EXHAUSTING ──► ENDED
+            └───────── false start (invalidated) ──────────► NONE
+```
+
+| State | Default entry rule (Balanced) |
+|---|---|
+| `EARLY` | Change-point or structure break **plus** ≥ 2 other groups agreeing; |score| ≥ 35 |
+| `CONFIRMED` | |score| ≥ 55 for 2 closed bars, higher timeframe not opposing, volume confirmation |
+| `MATURE` | Move ≥ 3 × ATR from origin, ADX > 30 |
+| `EXHAUSTING` | Any 2 of: RSI/CVD divergence, climax volume bar with long wick, funding extreme, price > 3 ATR from EMA 21, OI falling while price still rises |
+| `ENDED` | Trailing stop hit (Chandelier 3×ATR or Supertrend), or opposite `CONFIRMED` |
+| Invalidated | Price back beyond the trend origin (the swing point that started it) |
+
+- **Multi-timeframe alignment:** an "alignment" value counts how many of 1m/5m/15m/1h/4h agree.
+  A 1m trend aligned with 15m and 1h is ranked far higher than an isolated 1m trend.
+- For each trend the engine stores: origin price/time, detection price/time, lead (how far price had
+  moved from origin when detected, in % and ATR), current extension, max favourable move, and end reason.
+
+#### 6.3.4 Output per symbol/timeframe
+```json
+{"symbol": "SOLUSDT", "tf": "5m", "direction": "UP", "state": "CONFIRMED", "score": 68,
+ "alignment": "4/5", "origin": {"ts": 1759479600000, "price": 142.10},
+ "detected": {"ts": 1759479900000, "price": 143.05, "lead_atr": 0.9},
+ "p_continue_2atr": 0.58, "trail_stop": 141.70, "btc_coupling": "FOLLOWER",
+ "drivers": ["BOS above 142.9", "ER 0.62", "CVD rising", "OI +3.1%"]}
+```
+
+#### 6.3.5 Chart display
+- **Background shading** of the price pane: green for up, red for down. Opacity reflects state
+  (light = `EARLY`, solid = `CONFIRMED`/`MATURE`, hatched = `EXHAUSTING`). Toggleable.
+- **Trend-start markers** at the origin bar (`T▲` / `T▼`) and a smaller marker at the detection bar,
+  so the user can see the detection lag honestly.
+- **Trailing-stop line** (Chandelier/Supertrend) drawn while the trend is active.
+- **Auto trend lines / channel** from the swing points that define the trend.
+- **MTF trend strip**: a thin row of coloured cells above the chart (1m · 5m · 15m · 1h · 4h) showing
+  each timeframe's direction and state, plus the BTC state for comparison.
+- **Trend Board** (new panel): grid of all active coins × timeframes, coloured by direction and
+  strength, sortable by "new trends in the last N minutes", alignment, and score. Clicking a cell opens
+  that chart.
+- Alerts on `EARLY` (optional) and `CONFIRMED` (default) per coin, filtered by minimum alignment.
+
+#### 6.3.6 Validation (reported in the UI per sensitivity setting)
+- A "large move" is labelled historically as a move ≥ max(k × ATR(1h), X%) within horizon H
+  (defaults: k = 3, X = 2%, H = 4h, configurable per timeframe).
+- Metrics: **recall** (share of large moves detected), **precision** (share of `CONFIRMED` trends that
+  became large moves), **false starts per coin per day**, **median lead** (share of the total move still
+  ahead at detection time), and expectancy of S10 after costs.
+- Target for v1 (Balanced, 5m, top-20 coins, out-of-sample): recall ≥ 60%, median ≥ 60% of the move
+  remaining at `CONFIRMED`, S10 profit factor ≥ 1.3 after costs. These are goals to measure against,
+  not promises.
+
+### 6.4 BTC coupling (leader–follower analysis)
+
+**Purpose.** Many altcoins move with BTC. The terminal measures this for every active coin, shows it,
+and uses it in signals.
+
+#### 6.4.1 Measurements (rolling, per coin vs. BTCUSDT, also vs. ETHUSDT)
+| Metric | Method | Windows |
+|---|---|---|
+| Correlation ρ | Pearson and rank (Spearman) correlation of log returns | 1m returns over 4h and 24h; 5m returns over 3d |
+| Beta β | OLS / robust regression of coin returns on BTC returns; R² | Same |
+| Lead–lag | Cross-correlation of returns at lags −10…+10 bars on 1s/5s bars (Hayashi–Yoshida estimator for tick data optional); peak lag and its significance vs. a shuffled baseline | 1h, 4h |
+| Residual return | `coin_ret − β × btc_ret`, cumulative over the session ("idiosyncratic move") | Session, 1h |
+| Relative strength | Coin/BTC ratio trend (the `COINBTC` cross where listed, or synthetic) | 1h, 4h |
+| Stability | How much ρ and β changed over the last 24h | 24h |
+
+#### 6.4.2 Classification shown per coin
+| Label | Rule (defaults) |
+|---|---|
+| `FOLLOWER` | ρ ≥ 0.7 and R² ≥ 0.5 |
+| `PARTIAL` | 0.4 ≤ ρ < 0.7 |
+| `INDEPENDENT` | ρ < 0.4, or the coin is in a strong own trend with large residual return |
+| `LAGGER (≈ N s)` | Significant positive peak lag; shown as an extra tag on followers |
+| `DECOUPLING` | ρ dropped by > 0.3 in the last few hours, or the residual exceeds 2σ (news or coin-specific flow) |
+
+Honest note: on liquid majors the BTC lag is usually seconds or less and gets arbitraged quickly.
+Measurable lags are more common on less liquid altcoins, where slippage is also higher. The S12
+strategy must pass the same validation gates as every other strategy.
+
+#### 6.4.3 How it is used
+- **Chart header badge:** e.g. `BTC FOLLOWER · ρ 0.86 · β 1.4 · lag ≈ 20s`, colour-coded.
+- **BTC overlay:** optional normalised BTC line on the coin's chart (and ETH), plus a **residual pane**
+  showing the coin's own move after removing BTC.
+- **Signal filter:** for `FOLLOWER` coins, long signals while BTC is in a confirmed downtrend (and the
+  reverse) get a confluence penalty or veto (configurable).
+- **Catch-up scanner:** when BTC enters `CONFIRMED` on 1m/5m, list followers ranked by β × expected
+  move − move already made. Feeds S12.
+- **Relative-strength alerts:** a coin trending up while BTC is flat or falling (`INDEPENDENT` /
+  `DECOUPLING` with positive residual) is flagged as relative strength, which often comes before large
+  coin-specific moves.
+- **BTC shock alert:** BTC moves > k × σ in 1 minute → alert on all `FOLLOWER` positions and signals.
+
+### 6.5 Pump & Dump Detector (early detection of abnormal moves)
+
+**Purpose.** Catch large, fast moves (pumps and dumps) within their first seconds to minutes, across
+**all** Binance USDT pairs, and either ride them with strict risk or stay out of the way.
+
+**Realistic expectation.** A move can only be detected after it starts. The aim is to detect it in
+the early part, enter only while enough of the move is plausibly left, and avoid buying the top. Many
+pumps on small coins reverse violently, so position size and chase limits are part of the strategy.
+
+#### 6.5.1 Two-tier market scanning
+- **Tier 1 – whole market (all spot and futures USDT pairs):** lightweight streams — 1s klines or
+  `aggTrade` for every pair, `!miniTicker@arr`, `!markPrice@arr@1s`, `!forceOrder@arr` — spread over
+  several connections within Binance's per-connection stream limits. Computes cheap anomaly features.
+- **Tier 2 – escalated symbols:** when a symbol's tier-1 score crosses the watch threshold, subscribe
+  automatically to its full depth, `bookTicker`, and futures OI polling, and load its chart in the
+  radar. Escalation must complete in < 2 s.
+
+#### 6.5.2 Features (robust z-scores against a time-of-day-adjusted baseline using median/MAD)
+| Group | Features |
+|---|---|
+| Price velocity | Return over 5s / 15s / 60s / 5m divided by realised volatility; acceleration (velocity change) |
+| Volume | Volume and trade-count z-scores at 5s/1m vs. the same hour's baseline; RVOL |
+| Aggressor flow | Taker buy share, delta and CVD burst, clustering of large trades (> p99 size) |
+| Order book | Ask-side depletion (levels eaten or pulled), bid walls stepping up, OBI, spread change, book thinness ahead of price |
+| Derivatives | OI surge, funding jump, **short liquidations** (squeeze) or long liquidations (dump cascade), perp-vs-spot basis jump |
+| Origin | Which market leads: spot-led moves tend to be more sustained than perp-led ones; measured, not assumed |
+| Catalysts | Binance listing/delisting/monitoring announcements, news impact score (§9), spike in news/social mention count |
+| Context | Market cap / liquidity tier, Binance Monitoring or Seed tag, BTC state (is the whole market moving?), sector peers moving together |
+
+**Pre-move signs (lower confidence, watchlist only):** volume creeping up while price stays flat,
+OI rising on flat price, tightening range, repeated absorption of sells at a level, bid walls moving up.
+These put a coin on `WATCH`; they never produce a trade signal on their own.
+
+#### 6.5.3 Event stages
+```
+WATCH ──► IGNITION ──► CONFIRMED ──► EXHAUSTION ──► REVERSAL / FADE
+   └──────── fizzle (no follow-through within T) ──────► NONE
+```
+| Stage | Default rule |
+|---|---|
+| `WATCH` | Pre-move signs, or a single feature group at z > 3 |
+| `IGNITION` | ≥ 3 feature groups at z > 3 within 30 s, price velocity z > 4, move ≥ max(1%, 3σ) |
+| `CONFIRMED` | Follow-through after 60 s: price holds above (below) the ignition midpoint, flow still one-sided, volume still elevated |
+| `EXHAUSTION` | Any 2 of: climax volume with long wick, delta divergence, ask (bid) wall reloading and holding, funding spike, OI dropping as price keeps going (squeeze ending), move > p90 of historical pumps for that coin's tier |
+| `REVERSAL` | Break back below the move's VWAP (above, for dumps) with opposite flow |
+
+Each event is also classified as:
+- **Broad / organic:** BTC or sector moving too, or a verified news catalyst, decent liquidity.
+- **Isolated / suspicious:** small cap, thin book, no catalyst, perp-led with extreme funding. Shown
+  with a warning badge; these tend to reverse sharply.
+
+#### 6.5.4 Trading rules (S11)
+- **Momentum follow (default):** enter on `IGNITION` (aggressive mode) or `CONFIRMED` (default) in the
+  move's direction. Stop below the ignition bar low or the move's VWAP, whichever is tighter but still
+  outside noise. Trail with 1s/5s structure or a fast ATR trail. Take partial profit on the first
+  `EXHAUSTION` sign.
+- **Chase limit:** no entry if price is already more than k × ATR (default 4 × 1m ATR) or more than
+  p60 of the typical pump size for that liquidity tier away from the ignition origin.
+- **Size:** half the normal risk by default; size also capped by estimated slippage from the live book.
+- **Dumps:** short only on futures (spot users get an alert and a "protect positions" prompt).
+- **Fade (opt-in, off by default):** counter-trade only after `EXHAUSTION` + `REVERSAL` confirmation,
+  with a stop beyond the extreme.
+- **Filters:** minimum 24h quote volume and depth; skip pairs with very new listings for the first N
+  minutes unless the user enables listing mode; respect the §7.1 vetoes.
+
+#### 6.5.5 Model and validation
+- Historical event labelling: |return| ≥ max(X%, k·σ) within H minutes (defaults: 3%, 5σ, 15 min),
+  separately for pumps and dumps, from data.binance.vision trades and recorded data.
+- A LightGBM model scores, at each stage, `P(continuation ≥ y% more)` and `P(reversal before +y%)`,
+  calibrated as in §7.3.
+- Reported metrics: precision and recall of `IGNITION` and `CONFIRMED`, median detection delay,
+  share of the move captured, false alarms per day (whole market), S11 expectancy after realistic
+  slippage. Same promotion gates as §8.4.
+
+#### 6.5.6 Display
+- **Pump/Dump Radar panel:** live list of events with stage, direction, % move, time since ignition,
+  volume ×, OI change, liquidations, catalyst link, organic/suspicious badge. Sorted by stage and
+  score; click opens the chart.
+- **Chart markers:** `🚀` at ignition of a pump, `💥` at ignition of a dump, shaded event zone,
+  ignition origin line, and the chase-limit line (beyond it the UI shows "too late").
+- **Alerts:** highest priority (distinct sound, Telegram with chart snapshot) on `IGNITION` and
+  `CONFIRMED` for symbols passing the liquidity filter; `EXHAUSTION` alert for anyone holding the coin.
+
 ---
 
 ## 7. Signal engine: getting from candidates to accurate signals
 
 ```
-candidates (S1..S9) ─► hard filters ─► confluence score ─► ML meta-model ─► calibration ─► EV & risk check ─► SIGNAL
+candidates (S1..S12) ─► hard filters ─► confluence score ─► ML meta-model ─► calibration ─► EV & risk check ─► SIGNAL
 ```
 
 ### 7.1 Hard filters (veto layer)
@@ -297,6 +514,7 @@ Reject a candidate if any of these is true (each threshold is configurable):
 - Daily loss limit or max-trades limit reached (see §11).
 - Target distance < 3 × round-trip cost (fees + expected slippage).
 - Strategy marked as degraded by the live monitor (§8.5).
+- Coin is a BTC `FOLLOWER` and the signal opposes BTC's confirmed trend on the filter timeframe (§6.4.3; veto or penalty, configurable).
 
 ### 7.2 Confluence score (0–100, explainable)
 Weighted sum of normalised evidence from **independent families**. Weights are learned or set by the
@@ -304,7 +522,7 @@ user, and each contribution is shown in the UI.
 
 | Family | Example features | Default weight |
 |---|---|---|
-| Higher-TF trend alignment | 5m/15m/1h trend state, EMA slopes, ADX | 20 |
+| Higher-TF trend alignment | Trend Catcher state/score and MTF alignment (§6.3), BTC coupling and BTC trend (§6.4) | 20 |
 | Momentum | RSI/StochRSI state, MACD histogram slope, divergences | 10 |
 | Volume & flow | Delta, CVD slope/divergence, RVOL, footprint imbalances, absorption | 25 |
 | Order book | OBI, microprice skew, walls, book pressure change | 15 |
@@ -464,8 +682,12 @@ the terminal shows a "news degraded" badge and does not stop working.
 │ Signal panel │  Liquidity heatmap / footprint (tab)        │ News & events     │
 │ (active +    ├─────────────────────────────────────────────┤ feed (filtered    │
 │ history)     │  Positions · Orders · Fills · P&L · Journal │ to symbol)        │
-└──────────────┴─────────────────────────────────────────────┴───────────────────┘
+├──────────────┴──────────────────────┬──────────────────────┴───────────────────┤
+│ Trend Board (coins × TFs, §6.3.5)   │ Pump/Dump Radar (§6.5.6)                 │
+└─────────────────────────────────────┴──────────────────────────────────────────┘
 ```
+
+The main chart header always shows the MTF trend strip and the BTC coupling badge (§6.3.5, §6.4.3).
 
 ### 10.2 Chart requirements
 - Candles, Heikin-Ashi, line, range, and footprint modes. Synced crosshair across panes and linked charts.
@@ -475,6 +697,9 @@ the terminal shows a "news degraded" badge and does not stop working.
 - Historical signals and their outcomes (✓ TP / ✗ SL / ⏱ time stop) can be shown, so the user can
   see visually how the strategy behaved.
 - News markers (📰 icon coloured by sentiment) and macro event vertical lines.
+- Trend Catcher shading, `T▲`/`T▼` markers, trailing-stop line and auto trend channel (§6.3.5).
+- Pump/dump `🚀`/`💥` markers, event zone and chase-limit line (§6.5.6).
+- Optional normalised BTC/ETH overlay and residual (coin minus β × BTC) pane (§6.4.3).
 - Overlays: any §5 indicator, volume profile (visible range / session), VWAP bands, S/R zones,
   liquidity pools, estimated liquidation levels, previous day high/low.
 - **Liquidity heatmap**: order book depth over time (price × time × size), WebGL rendered, plus
@@ -484,7 +709,8 @@ the terminal shows a "news degraded" badge and does not stop working.
 
 ### 10.3 Scanner
 - Ranks all watched pairs every N seconds by: active signal quality, RVOL, volatility percentile,
-  spread/depth quality, momentum, and news impact.
+  spread/depth quality, momentum, news impact, new Trend Catcher `CONFIRMED` events with MTF
+  alignment, active pump/dump events, and BTC catch-up candidates.
 - Default universe: top-N USDT pairs by 24h volume, excluding pairs flagged as illiquid or under monitoring.
 
 ### 10.4 Trading panel
@@ -581,6 +807,9 @@ the terminal shows a "news degraded" badge and does not stop working.
 | `signals` | full signal JSON, status, outcome, realised_R, mae, mfe |
 | `orders` / `fills` / `positions` | standard execution records with signal_id link |
 | `models` | model_id, strategy, trained_range, metrics, calibration, artifact_path |
+| `trends` | id, symbol, tf, direction, state history, score, alignment, origin/detection ts+price, lead_atr, max_move, end_reason |
+| `btc_coupling` | symbol, ts, window, rho, rank_rho, beta, r2, peak_lag, lag_significance, residual, label |
+| `move_events` | id, symbol, market, direction, stage history, ignition ts/price, features snapshot, classification (organic/suspicious), catalyst_id, peak move, outcome |
 
 ---
 
@@ -608,6 +837,7 @@ the terminal shows a "news degraded" badge and does not stop working.
 | **P1 – Charting terminal** (3–4 wks) | React UI, Lightweight Charts, core indicators, DOM, time & sales, watchlist, workspaces | 60 fps chart; indicators pass conformance tests |
 | **P2 – Order flow** (2–3 wks) | CVD, footprint, volume profile, heatmap, OBI, large trades, liquidations, derivatives panes | Visual check vs. reference tools; perf targets met |
 | **P3 – Strategies & backtester** (4 wks) | S1–S9, event-driven and vector backtester, reports, walk-forward | Reproducible reports; no-look-ahead test green |
+| **P3b – Detectors** (3–4 wks) | Trend Catcher, BTC coupling, market-wide tier-1/tier-2 scanner, Pump & Dump Detector, S10–S12, Trend Board, Radar, chart overlays | Detector metrics (§6.3.6, §6.5.5) reported out-of-sample; 100-symbol update budget met |
 | **P4 – Signal intelligence** (3–4 wks) | Filters, confluence, regime, LightGBM meta-model, calibration, SHAP, live monitor | Calibration ECE < 5% out-of-sample on at least 2 strategies |
 | **P5 – News & events** (2–3 wks) | Adapters, tagging, sentiment model, impact calibration, vetoes, markers | Event veto verified on historical CPI/FOMC days |
 | **P6 – Execution & risk** (3 wks) | Order manager, risk engine, hotkeys, testnet, journal | Full testnet test suite green; kill switch < 1 s |
@@ -624,7 +854,8 @@ scalping/
 │   ├── bars/            # candle & activity bar builders
 │   ├── indicators/      # incremental indicator library
 │   ├── features/        # feature store for signals/ML
-│   ├── strategies/      # S1..S9 plug-ins + YAML params
+│   ├── strategies/      # S1..S12 plug-ins + YAML params
+│   ├── detectors/       # trend catcher, btc coupling, pump/dump detector + market-wide scanner
 │   ├── signals/         # filters, confluence, regime, meta-model, calibration
 │   ├── news/            # source adapters, NLP, impact scoring
 │   ├── execution/       # order manager, risk engine, user data stream
@@ -666,7 +897,10 @@ scalping/
 5. News feed ingests at least 5 free sources, tags coins, scores sentiment and impact, and enforces macro/coin event vetoes.
 6. Risk engine blocks orders that break any §11.3 rule; the kill switch flattens everything in under 1 second on testnet.
 7. Alerts reach Telegram within 2 seconds of signal creation.
-8. The whole system runs with zero paid software or data subscriptions.
+8. Trend Catcher state, markers and MTF strip are shown for every active coin; the Trend Board covers at least 100 coins × 5 timeframes; its recall, precision, false-start rate and median lead are reported per sensitivity setting.
+9. Every active coin shows its BTC coupling label (ρ, β, lag); follower signals against BTC's trend are filtered.
+10. The Pump & Dump Detector scans all Binance USDT spot and futures pairs, escalates candidates in < 2 s, shows them in the radar and on the chart, and its detection delay and precision are measured on historical events.
+11. The whole system runs with zero paid software or data subscriptions.
 
 ---
 
