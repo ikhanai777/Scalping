@@ -1,0 +1,138 @@
+# Scalping terminal — default configuration.
+# Copy to config/local.yaml (gitignored) to override any value. Environment variables
+# SCALPER_<SECTION>__<KEY> also override, e.g. SCALPER_ALERTS__TELEGRAM_TOKEN=...
+
+binance:
+  # Market-data-only hosts avoid trading rate limits and work in more regions.
+  spot_rest: https://data-api.binance.vision
+  spot_ws: wss://data-stream.binance.vision
+  # Signed spot endpoints (orders/account). Testnet: https://testnet.binance.vision
+  spot_trade_rest: https://api.binance.com
+  futures_rest: https://fapi.binance.com
+  futures_ws: wss://fstream.binance.com
+  enable_futures: true          # auto-disabled at runtime if unreachable
+  max_streams_per_connection: 200
+  weight_limit_per_min: 6000
+  weight_safety: 0.7            # use at most 70% of the limit
+
+universe:
+  quote: USDT
+  trend_universe_size: 60       # top-N pairs by 24h quote volume get 1m klines + trend catcher
+  radar_min_quote_volume: 2000000   # pairs above this 24h volume are scanned by the pump radar
+  radar_max_symbols: 400
+  always_include: [BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT]
+  exclude_bases: [USDC, FDUSD, TUSD, USDP, DAI, BUSD, EUR, AEUR, USDE, XUSD, PAXG]
+
+timeframes:
+  trend: ["1m", "5m", "15m", "1h", "4h"]
+  history_bars: 600             # bars backfilled per timeframe at startup
+
+fees:                           # fractions, not percent
+  spot_taker: 0.001
+  spot_maker: 0.001
+  futures_taker: 0.0005
+  futures_maker: 0.0002
+  bnb_discount: false
+  slippage_bps: 2.0             # default slippage assumption when no book is available
+
+signals:
+  min_confluence: 55
+  min_p_win: 0.4                # per-signal floor; EV after costs must also be > 0
+  min_samples_for_probability: 30
+  show_unvalidated: true        # show grey "unvalidated" signals before a strategy has stats
+  min_target_cost_multiple: 3.0
+  max_spread_bps: 8.0
+  stale_data_seconds: 5
+  btc_follower_mode: penalty    # veto | penalty | off
+  macro_block_before_min: 15
+  macro_block_after_min: 30
+  primary_tf: "1m"
+  strategies:
+    S1_trend_pullback: {enabled: true}
+    S2_vwap_reversion: {enabled: true}
+    S3_squeeze_breakout: {enabled: true}
+    S4_liquidity_sweep: {enabled: true}
+    S5_orderflow_momentum: {enabled: true}
+    S6_session_breakout: {enabled: true}
+    S7_liquidation_cascade: {enabled: true}
+    S9_supertrend_macd: {enabled: true}
+    S10_trend_catcher: {enabled: true}
+    S11_pump_momentum: {enabled: true}
+    S12_btc_catchup: {enabled: true}
+
+trend:
+  sensitivity: balanced         # early | balanced | conservative
+  chandelier_atr: 3.0
+  mature_atr: 3.0
+
+coupling:
+  follower_rho: 0.7
+  follower_r2: 0.5
+  partial_rho: 0.4
+  window_short: 240             # 1m bars (4h)
+  window_long: 1440             # 1m bars (24h)
+  leadlag_max_lag: 10           # in 5s steps
+
+pump:
+  min_move_pct: 1.0
+  ignition_velocity_z: 4.0
+  group_z: 3.0
+  confirm_seconds: 60
+  fizzle_seconds: 180
+  chase_atr: 4.0
+  chase_move_pct: 6.0
+  typical_p90_move_pct: 15.0
+  organic_min_quote_volume: 20000000
+  suspicious_max_quote_volume: 5000000
+
+risk:
+  equity: 10000                 # paper account starting equity (quote currency)
+  risk_per_trade: 0.005
+  max_daily_loss: 0.02
+  max_consecutive_losses: 4
+  cooldown_minutes: 30
+  max_open_positions: 3
+  max_leverage: 5
+  require_stop: true
+
+execution:
+  mode: paper                   # paper | testnet | live
+  market: spot                  # spot | futures
+  api_key_env: BINANCE_API_KEY
+  api_secret_env: BINANCE_API_SECRET
+
+news:
+  enabled: true
+  poll_seconds: 120
+  rss:
+    - {name: CoinDesk, url: "https://www.coindesk.com/arc/outboundfeeds/rss/", credibility: 0.9}
+    - {name: Cointelegraph, url: "https://cointelegraph.com/rss", credibility: 0.8}
+    - {name: The Block, url: "https://www.theblock.co/rss.xml", credibility: 0.9}
+    - {name: Decrypt, url: "https://decrypt.co/feed", credibility: 0.8}
+    - {name: Blockworks, url: "https://blockworks.co/feed", credibility: 0.8}
+  cryptopanic_token: ""         # optional free API key
+  calendar_url: "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+  binance_announcements: true
+  fear_greed: true
+  transformer_model: ""         # e.g. ProsusAI/finbert (needs the [nlp] extra); empty = VADER
+
+alerts:
+  telegram_token: ""
+  telegram_chat_id: ""
+  discord_webhook: ""
+  min_p_win: 0.55
+  trend_min_alignment: 3
+  pump_alerts: true
+
+bootstrap:                      # seed strategy statistics by backtesting recent history at first start
+  enabled: true
+  symbols: 8
+  days: 7
+
+storage:
+  data_dir: data
+  record_trades: false          # Parquet recording of aggTrades/book for focused symbols
+
+server:
+  host: 127.0.0.1
+  port: 8000
