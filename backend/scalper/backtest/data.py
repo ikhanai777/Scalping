@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import time
 import zipfile
 from datetime import date, datetime, timedelta, timezone
@@ -12,6 +13,7 @@ import pandas as pd
 
 from ..models import TF_MS, Bar
 
+log = logging.getLogger(__name__)
 VISION = "https://data.binance.vision/data"
 COLS = ["open_time", "open", "high", "low", "close", "volume", "close_time", "quote_volume", "trades",
         "taker_buy_volume", "taker_buy_quote", "ignore"]
@@ -103,7 +105,11 @@ def load_history(symbol: str, interval: str, days: int, cache_dir: Path, market:
         if df is None or df.empty:
             start = int(datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp() * 1000)
             stop = min(start + 86_400_000 - 1, int(end.timestamp() * 1000))
-            df = fetch_klines_rest(symbol, interval, start, stop, rest_base, market)
+            try:
+                df = fetch_klines_rest(symbol, interval, start, stop, rest_base, market)
+            except httpx.HTTPError as e:      # e.g. region-blocked REST: keep the bulk-archive days
+                log.warning("REST klines unavailable for %s %s %s (%s); skipping that day", symbol, interval, day, e)
+                df = None
         if df is not None and not df.empty:
             if day != today:
                 df.to_parquet(f)
