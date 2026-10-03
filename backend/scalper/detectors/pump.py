@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-import numpy as np
+import statistics
 
 from ..models import Bar
 from ..stats import OutcomeStats
@@ -17,10 +17,10 @@ STAGES = ["NONE", "WATCH", "IGNITION", "CONFIRMED", "EXHAUSTION", "REVERSAL"]
 
 
 class Ring:
-    """Fixed-size float ring buffer with ordered views."""
+    """Fixed-size float ring buffer with ordered views (pure Python: no numpy, so it runs on Android)."""
 
     def __init__(self, n: int):
-        self.a = np.zeros(n)
+        self.a = [0.0] * n
         self.n = n
         self.i = 0
         self.count = 0
@@ -30,27 +30,29 @@ class Ring:
         self.i = (self.i + 1) % self.n
         self.count = min(self.count + 1, self.n)
 
-    def last(self, k: int) -> np.ndarray:
+    def last(self, k: int) -> list[float]:
+        """The newest ``k`` values, oldest first."""
         k = min(k, self.count)
         if k == 0:
-            return self.a[:0]
+            return []
         start = (self.i - k) % self.n
         if start + k <= self.n:
             return self.a[start:start + k]
-        return np.concatenate((self.a[start:], self.a[: self.i]))
+        return self.a[start:] + self.a[: self.i]
 
     def get(self, back: int) -> float:
         """Value ``back`` steps ago (0 = newest)."""
-        return float(self.a[(self.i - 1 - back) % self.n])
+        return self.a[(self.i - 1 - back) % self.n]
 
 
-def robust(values: np.ndarray, floor_frac: float = 0.25, floor_abs: float = 1e-12) -> tuple[float, float]:
+def robust(values: list[float], floor_frac: float = 0.25, floor_abs: float = 1e-12) -> tuple[float, float]:
     """Median and a robust scale (1.4826·MAD) with a floor so sparse series don't blow up z-scores."""
-    if len(values) == 0:
+    if not values:
         return 0.0, 1.0
-    med = float(np.median(values))
-    mad = float(np.median(np.abs(values - med))) * 1.4826
-    return med, max(mad, floor_frac * float(np.mean(np.abs(values))), floor_abs)
+    med = statistics.median(values)
+    mad = statistics.median([abs(v - med) for v in values]) * 1.4826
+    mean_abs = sum(abs(v) for v in values) / len(values)
+    return med, max(mad, floor_frac * mean_abs, floor_abs)
 
 
 @dataclass
@@ -201,11 +203,11 @@ class PumpDetector:
         s.tb.push(tb)
         s.trades.push(n)
         s.ret.push(math.log(c / prev) if prev > 0 and c > 0 else 0.0)
-        v15 = float(s.v.last(15).sum())
-        tb15 = float(s.tb.last(15).sum())
+        v15 = sum(s.v.last(15))
+        tb15 = sum(s.tb.last(15))
         s.vol15.push(v15)
-        s.vol60.push(float(s.v.last(60).sum()))
-        s.tr15.push(float(s.trades.last(15).sum()))
+        s.vol60.push(sum(s.v.last(60)))
+        s.tr15.push(sum(s.trades.last(15)))
         s.imb15.push((2 * tb15 / v15 - 1) if v15 > 0 else 0.0)
 
     def _baseline(self, s: _Sym) -> None:
@@ -230,8 +232,8 @@ class PumpDetector:
         k = len(h) // 60
         if k == 0:
             return 0.0
-        rng = [h[i * 60:(i + 1) * 60].max() - l[i * 60:(i + 1) * 60].min() for i in range(k)]
-        return float(np.mean(rng))
+        rng = [max(h[i * 60:(i + 1) * 60]) - min(l[i * 60:(i + 1) * 60]) for i in range(k)]
+        return sum(rng) / len(rng)
 
     # ------------------------------------------------------------------ evaluation
     def _evaluate(self, symbol: str, s: _Sym, t: int, bar: Bar) -> list[dict]:
@@ -273,7 +275,7 @@ class PumpDetector:
         if ev is None:
             if abs(vz) >= self.ign_z and len(recent_groups) >= 3 and "velocity" in recent_groups:
                 origin_idx_prices = s.c.last(300)
-                origin = float(origin_idx_prices.min() if d > 0 else origin_idx_prices.max())
+                origin = min(origin_idx_prices) if d > 0 else max(origin_idx_prices)
                 move = 100 * (c - origin) / origin * d
                 min_move = max(self.min_move_pct, 100 * 3 * sigma * math.sqrt(hbest))
                 vol_x = self._vol_x(s)
@@ -302,7 +304,8 @@ class PumpDetector:
             if (c - mid) * d < 0:
                 out.append(self._close(s, t, "fizzle"))
             elif age >= self.confirm_s:
-                imb60 = float(np.mean(s.imb15.last(60)))
+                last60 = s.imb15.last(60)
+                imb60 = sum(last60) / len(last60)
                 v60z = self._z(s, "vol60", s.vol60.get(0))
                 if imb60 * d > 0.1 and v60z > 2:
                     ev.stage = "CONFIRMED"
@@ -313,7 +316,7 @@ class PumpDetector:
                     out.append(self._close(s, t, "fizzle"))
         elif ev.stage in ("CONFIRMED", "EXHAUSTION"):
             signs = []
-            hi60, lo60 = float(s.h.last(60).max()), float(s.l.last(60).min())
+            hi60, lo60 = max(s.h.last(60)), min(s.l.last(60))
             rng = hi60 - lo60
             wick = (hi60 - c) if d > 0 else (c - lo60)
             if self._z(s, "vol15", s.vol15.get(0)) > 8 and rng > 0 and wick / rng > 0.5:
@@ -360,7 +363,7 @@ class PumpDetector:
         ev.vwap_pv, ev.vwap_v = bar.close * bar.volume, bar.volume
         # find origin time: scan back for the origin price
         closes = s.c.last(300)
-        idx = int(np.argmin(closes) if d > 0 else np.argmax(closes))
+        idx = closes.index(min(closes) if d > 0 else max(closes))
         ev.origin_ts = t - (len(closes) - 1 - idx) * 1000
         ev.history.append(("IGNITION", t, bar.close))
         ev.classification = self._classify(symbol, d, cat)

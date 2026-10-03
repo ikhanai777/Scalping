@@ -5,10 +5,8 @@ import asyncio
 import json
 import logging
 import math
-import multiprocessing
 import time
 from collections import deque
-from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from .alerts import Alerts, fmt_pump, fmt_signal, fmt_trend
@@ -389,17 +387,25 @@ class Engine:
                 self.pump.quote_volume[r["symbol"]] = r["quote_volume"]
 
     async def _bootstrap(self) -> None:
-        """Seed strategy statistics from a backtest over recent history (worker process)."""
+        """Seed strategy statistics from a backtest over recent history.
+
+        Runs in a worker process on desktop; on Android (``bootstrap.mode: thread``) in a thread,
+        because Python multiprocessing is unavailable there."""
         n_sym = self.cfg.get_path("bootstrap.symbols", 8)
         days = self.cfg.get_path("bootstrap.days", 7)
         syms = self.trend_syms[:n_sym]
         self.backtest_report = {"status": "running", "symbols": syms, "days": days}
         loop = asyncio.get_running_loop()
         try:
-            # "spawn" everywhere = the Windows behaviour, so it is exercised on every platform.
-            with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as pool:
-                res = await loop.run_in_executor(pool, _bootstrap_job, json.loads(json.dumps(self.cfg)), syms, days,
-                                                 str(self.ddir))
+            args = (json.loads(json.dumps(self.cfg)), syms, days, str(self.ddir))
+            if self.cfg.get_path("bootstrap.mode", "process") == "thread":
+                res = await loop.run_in_executor(None, _bootstrap_job, *args)
+            else:
+                import multiprocessing
+                from concurrent.futures import ProcessPoolExecutor
+                # "spawn" everywhere = the Windows behaviour, so it is exercised on every platform.
+                with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as pool:
+                    res = await loop.run_in_executor(pool, _bootstrap_job, *args)
             for sid, rs in res["by_strategy"].items():
                 self.stats.set_backtest(sid, rs)
             self.stats.save()

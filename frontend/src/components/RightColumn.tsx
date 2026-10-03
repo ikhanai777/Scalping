@@ -6,9 +6,11 @@ import type { Account, BookMetrics } from "../types";
 type Level = [number, number];
 interface Wall { side: string; price: number; qty: number; age_s: number }
 
-export default function RightColumn({ symbol, account, stop, setStop, notify }: {
+export default function RightColumn({ symbol, account, stop, setStop, notify, compact = false }: {
   symbol: string; account: Account | null; stop: string; setStop: (s: string) => void; notify: (msg: string, bad?: boolean) => void;
+  compact?: boolean;
 }) {
+  const depth = compact ? 7 : 15;
   const [bids, setBids] = useState<Level[]>([]);
   const [asks, setAsks] = useState<Level[]>([]);
   const [metrics, setMetrics] = useState<BookMetrics | null>(null);
@@ -27,19 +29,19 @@ export default function RightColumn({ symbol, account, stop, setStop, notify }: 
     });
   }, [symbol]);
 
-  const maxQ = Math.max(1e-12, ...bids.slice(0, 15).map((b) => b[1]), ...asks.slice(0, 15).map((a) => a[1]));
+  const maxQ = Math.max(1e-12, ...bids.slice(0, depth).map((b) => b[1]), ...asks.slice(0, 15).map((a) => a[1]));
   const wallSet = new Set(walls.map((w) => w.price));
   const mid = metrics?.mid ?? (bids[0] && asks[0] ? (bids[0][0] + asks[0][0]) / 2 : null);
 
   return (
-    <div className="panel right-col">
+    <div className={`panel right-col ${compact ? "compact" : ""}`}>
       <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
         <div className="panel-h">Order book <span className="grow" />
           {metrics && <span title="Order book imbalance (top 10 levels)" className={metrics.obi > 0 ? "up" : "dn"}>OBI {fmtNum(metrics.obi, 2)}</span>}
         </div>
         <div className="scroll" style={{ flex: 1 }}>
           {!bids.length && <div className="empty">Syncing order book…</div>}
-          {asks.slice(0, 15).reverse().map(([p, q]) => (
+          {asks.slice(0, depth).reverse().map(([p, q]) => (
             <div key={`a${p}`} className={`dom-row ask ${wallSet.has(p) ? "wall" : ""}`} onClick={() => setStop(String(p))} title="Click to use as stop/price">
               <span className="dn">{fmtPrice(p)}</span><span className="right">{fmtNum(q, 4)}</span><span className="right faint">{wallSet.has(p) ? "wall" : ""}</span>
               <span className="bar" style={{ width: `${(q / maxQ) * 100}%` }} />
@@ -51,7 +53,7 @@ export default function RightColumn({ symbol, account, stop, setStop, notify }: 
               {metrics && <span className="muted">spread {fmtNum(metrics.spread_bps, 2)}bps · μ {fmtPrice(metrics.microprice)}</span>}
             </div>
           )}
-          {bids.slice(0, 15).map(([p, q]) => (
+          {bids.slice(0, depth).map(([p, q]) => (
             <div key={`b${p}`} className={`dom-row bid ${wallSet.has(p) ? "wall" : ""}`} onClick={() => setStop(String(p))} title="Click to use as stop/price">
               <span className="up">{fmtPrice(p)}</span><span className="right">{fmtNum(q, 4)}</span><span className="right faint">{wallSet.has(p) ? "wall" : ""}</span>
               <span className="bar" style={{ width: `${(q / maxQ) * 100}%` }} />
@@ -64,7 +66,7 @@ export default function RightColumn({ symbol, account, stop, setStop, notify }: 
           </div>
         )}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", minHeight: 0, borderTop: "1px solid var(--border)" }}>
+      {!compact && <div style={{ display: "flex", flexDirection: "column", minHeight: 0, borderTop: "1px solid var(--border)" }}>
         <div className="panel-h">Time & sales</div>
         <div className="scroll">
           {trades.map(([t, p, q, side, large], i) => (
@@ -76,7 +78,7 @@ export default function RightColumn({ symbol, account, stop, setStop, notify }: 
           ))}
           {!trades.length && <div className="empty">Waiting for trades…</div>}
         </div>
-      </div>
+      </div>}
       <Ticket symbol={symbol} price={mid} account={account} stop={stop} setStop={setStop} notify={notify} />
     </div>
   );

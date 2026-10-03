@@ -1,0 +1,9 @@
+# Python packages bundled into the APK — all pure Python except pyyaml (prebuilt by Chaquopy). No numpy: the engine is pure Python.
+pyyaml
+certifi
+httpx
+starlette
+uvicorn
+websockets
+feedparser
+vaderSentiment

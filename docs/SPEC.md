@@ -115,7 +115,7 @@ be hard-coded or marketing copy.
 |---|---|---|
 | Backend language | Python 3.12+ (asyncio, uvloop) | Free |
 | Hot paths | NumPy + Numba (or Rust via PyO3 if profiling shows it's needed) | Free |
-| API | FastAPI + native WebSockets, `orjson` | MIT/Apache |
+| API | Starlette + native WebSockets (pure Python, also runs inside the Android app) | BSD |
 | Binance client | Own thin client, or `python-binance` / `binance-connector` (official) | MIT |
 | Indicators | Own incremental implementations, cross-checked against TA-Lib and `pandas-ta` | BSD/MIT |
 | Storage | DuckDB + Parquet (research and history); SQLite (app state); optional TimescaleDB | MIT/PostgreSQL |

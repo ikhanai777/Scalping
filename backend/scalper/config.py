@@ -1,4 +1,9 @@
-"""Configuration loading: config/default.yaml < config/local.yaml < SCALPER_* env vars."""
+"""Configuration loading.
+
+Order (later wins): config/default.yaml < config/<profile>.yaml (SCALPER_PROFILE, e.g. "mobile")
+< local.yaml < SCALPER_* environment variables. local.yaml lives in SCALPER_LOCAL_CONFIG_DIR when
+set (a writable location, e.g. the Android app's files dir), otherwise next to default.yaml.
+"""
 from __future__ import annotations
 
 import os
@@ -9,6 +14,10 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = Path(os.environ.get("SCALPER_CONFIG_DIR", REPO_ROOT / "config"))
+
+
+def local_config_path() -> Path:
+    return Path(os.environ.get("SCALPER_LOCAL_CONFIG_DIR", CONFIG_DIR)) / "local.yaml"
 
 
 class Cfg(dict):
@@ -49,8 +58,12 @@ def _coerce(raw: str) -> Any:
 
 def load_config(extra: dict | None = None) -> Cfg:
     data: dict = {}
-    for name in ("default.yaml", "local.yaml"):
-        p = CONFIG_DIR / name
+    files = [CONFIG_DIR / "default.yaml"]
+    profile = os.environ.get("SCALPER_PROFILE")
+    if profile:
+        files.append(CONFIG_DIR / f"{profile}.yaml")
+    files.append(local_config_path())
+    for p in files:
         if p.exists():
             data = _merge(data, yaml.safe_load(p.read_text(encoding="utf-8-sig")) or {})
     for key, raw in os.environ.items():
@@ -64,6 +77,24 @@ def load_config(extra: dict | None = None) -> Cfg:
     if extra:
         data = _merge(data, extra)
     return Cfg(data)
+
+
+def save_local_settings(updates: dict[str, Any]) -> Path:
+    """Merge dotted-key updates (e.g. {"risk.equity": 5000}) into local.yaml and return its path."""
+    p = local_config_path()
+    data = yaml.safe_load(p.read_text(encoding="utf-8-sig")) or {} if p.exists() else {}
+    for dotted, value in updates.items():
+        cur = data
+        parts = dotted.split(".")
+        for part in parts[:-1]:
+            nxt = cur.get(part)
+            if not isinstance(nxt, dict):
+                nxt = cur[part] = {}
+            cur = nxt
+        cur[parts[-1]] = value
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return p
 
 
 def data_dir(cfg: Cfg) -> Path:

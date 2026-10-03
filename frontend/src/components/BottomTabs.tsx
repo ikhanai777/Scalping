@@ -8,7 +8,7 @@ type Tab = "signals" | "trends" | "radar" | "news" | "positions" | "strategies" 
 const TABS: [Tab, string][] = [["signals", "Signals"], ["trends", "Trend Board"], ["radar", "Pump/Dump Radar"], ["news", "News & Events"],
   ["positions", "Paper positions"], ["strategies", "Strategies & stats"], ["coupling", "BTC coupling"]];
 
-interface Props {
+export interface Props {
   signals: SignalJ[]; radar: MoveEvent[]; news: NewsItem[]; events: CalEvent[]; account: Account | null;
   coupling: Coupling[]; onSelect: (s: string) => void; notify: (m: string, bad?: boolean) => void;
 }
@@ -43,7 +43,7 @@ export default function BottomTabs(p: Props) {
   );
 }
 
-function Signals({ signals, onSelect, notify }: Props) {
+export function Signals({ signals, onSelect, notify }: Props) {
   const take = async (s: SignalJ) => {
     try { await post(`/api/orders/from-signal/${s.id}`); notify(`Paper position opened from ${sid(s.strategy)} ${s.symbol}`); }
     catch (e) { notify(String(e).replace("Error: ", ""), true); }
@@ -78,7 +78,7 @@ function Signals({ signals, onSelect, notify }: Props) {
   );
 }
 
-function Trends({ onSelect }: { onSelect: (s: string) => void }) {
+export function Trends({ onSelect }: { onSelect: (s: string) => void }) {
   const [b, setB] = useState<TrendBoard | null>(null);
   const [sort, setSort] = useState<"newest" | "alignment">("newest");
   useEffect(() => {
@@ -126,7 +126,7 @@ function Trends({ onSelect }: { onSelect: (s: string) => void }) {
   );
 }
 
-function Radar({ radar, onSelect }: { radar: MoveEvent[]; onSelect: (s: string) => void }) {
+export function Radar({ radar, onSelect }: { radar: MoveEvent[]; onSelect: (s: string) => void }) {
   const [recent, setRecent] = useState<MoveEvent[]>([]);
   useEffect(() => { get<{ recent: MoveEvent[] }>("/api/radar").then((r) => setRecent(r.recent)).catch(() => undefined); }, [radar.length]);
   const active = radar.filter((e) => e.stage && e.stage !== "WATCH");
@@ -160,7 +160,7 @@ function Radar({ radar, onSelect }: { radar: MoveEvent[]; onSelect: (s: string) 
   );
 }
 
-function News({ news, events, onSelect }: { news: NewsItem[]; events: CalEvent[]; onSelect: (s: string) => void }) {
+export function News({ news, events, onSelect }: { news: NewsItem[]; events: CalEvent[]; onSelect: (s: string) => void }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", minHeight: "100%" }}>
       <table className="t">
@@ -191,7 +191,7 @@ function News({ news, events, onSelect }: { news: NewsItem[]; events: CalEvent[]
   );
 }
 
-function Positions({ account, notify, onSelect }: { account: Account | null; notify: (m: string, bad?: boolean) => void; onSelect: (s: string) => void }) {
+export function Positions({ account, notify, onSelect }: { account: Account | null; notify: (m: string, bad?: boolean) => void; onSelect: (s: string) => void }) {
   if (!account) return <div className="empty">Loading…</div>;
   const act = async (path: string, msg: string) => {
     try { await post(path); notify(msg); } catch (e) { notify(String(e), true); }
@@ -234,7 +234,7 @@ function Positions({ account, notify, onSelect }: { account: Account | null; not
   );
 }
 
-function Strategies() {
+export function Strategies() {
   const [d, setD] = useState<{ strategies: StrategyInfo[]; bootstrap: Record<string, unknown> | null } | null>(null);
   useEffect(() => { get<typeof d>("/api/strategies").then(setD).catch(() => undefined); }, []);
   if (!d) return <div className="empty">Loading…</div>;
@@ -264,7 +264,7 @@ function Strategies() {
   );
 }
 
-function CouplingTable({ rows, onSelect }: { rows: Coupling[]; onSelect: (s: string) => void }) {
+export function CouplingTable({ rows, onSelect }: { rows: Coupling[]; onSelect: (s: string) => void }) {
   const sorted = [...rows].sort((a, b) => b.rho - a.rho);
   if (!rows.length) return <div className="empty">Coupling needs a few minutes of aligned data.</div>;
   return (

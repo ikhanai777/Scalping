@@ -4,39 +4,73 @@ from __future__ import annotations
 import math
 from collections import deque
 
-import numpy as np
+
+# Pure-Python statistics (no numpy, so the same code runs inside the Android app).
+
+def _mean(a) -> float:
+    return sum(a) / len(a)
 
 
-def _rank(a: np.ndarray) -> np.ndarray:
-    order = a.argsort()
-    r = np.empty_like(order, dtype=float)
-    r[order] = np.arange(len(a), dtype=float)
+def _std(a, m: float | None = None) -> float:
+    m = _mean(a) if m is None else m
+    return math.sqrt(sum((v - m) ** 2 for v in a) / len(a))
+
+
+def _cov(x, y, mx: float, my: float) -> float:
+    return sum((a - mx) * (b - my) for a, b in zip(x, y)) / len(x)
+
+
+def _rank(a) -> list[float]:
+    order = sorted(range(len(a)), key=a.__getitem__)
+    r = [0.0] * len(a)
+    for pos, idx in enumerate(order):
+        r[idx] = float(pos)
     return r
 
 
-def correlation_stats(x: np.ndarray, y: np.ndarray) -> dict | None:
+def _corr(x, y) -> float:
+    mx, my = _mean(x), _mean(y)
+    sx, sy = _std(x, mx), _std(y, my)
+    return _cov(x, y, mx, my) / (sx * sy) if sx and sy else 0.0
+
+
+def _log_returns(prices) -> list[float]:
+    return [math.log(b / a) for a, b in zip(prices, prices[1:])]
+
+
+def correlation_stats(x, y) -> dict | None:
     """x = coin log returns, y = leader log returns (aligned). Returns rho, spearman, beta, r2."""
-    m = np.isfinite(x) & np.isfinite(y)
-    x, y = x[m], y[m]
-    if len(x) < 30 or x.std() == 0 or y.std() == 0:
+    pairs = [(float(a), float(b)) for a, b in zip(x, y) if math.isfinite(a) and math.isfinite(b)]
+    if len(pairs) < 30:
         return None
-    rho = float(np.corrcoef(x, y)[0, 1])
-    sp = float(np.corrcoef(_rank(x), _rank(y))[0, 1])
-    beta = float(np.cov(x, y, ddof=0)[0, 1] / y.var())
-    return {"rho": rho, "spearman": sp, "beta": beta, "r2": rho * rho, "n": int(len(x))}
+    x = [a for a, _ in pairs]
+    y = [b for _, b in pairs]
+    mx, my = _mean(x), _mean(y)
+    sx, sy = _std(x, mx), _std(y, my)
+    if sx == 0 or sy == 0:
+        return None
+    cov = _cov(x, y, mx, my)
+    rho = cov / (sx * sy)
+    return {"rho": rho, "spearman": _corr(_rank(x), _rank(y)), "beta": cov / (sy * sy), "r2": rho * rho,
+            "n": len(x)}
 
 
-def lead_lag(x: np.ndarray, y: np.ndarray, max_lag: int = 10) -> dict | None:
+def lead_lag(x, y, max_lag: int = 10) -> dict | None:
     """Cross-correlation corr(x[t], y[t-lag]) for lag in [-max_lag, max_lag].
 
     Positive best lag => the coin (x) follows the leader (y) by ``lag`` steps.
     Significance: peak must beat the zero-lag correlation and the ~99% noise band 2.58/sqrt(n).
     """
+    x, y = [float(v) for v in x], [float(v) for v in y]
     n = len(x)
-    if n < 60 or x.std() == 0 or y.std() == 0:
+    if n < 60:
         return None
-    xs = (x - x.mean()) / x.std()
-    ys = (y - y.mean()) / y.std()
+    mx, my = _mean(x), _mean(y)
+    sx, sy = _std(x, mx), _std(y, my)
+    if sx == 0 or sy == 0:
+        return None
+    xs = [(v - mx) / sx for v in x]
+    ys = [(v - my) / sy for v in y]
     corrs = {}
     for lag in range(-max_lag, max_lag + 1):
         if lag > 0:
@@ -45,7 +79,7 @@ def lead_lag(x: np.ndarray, y: np.ndarray, max_lag: int = 10) -> dict | None:
             a, b = xs[:lag], ys[-lag:]
         else:
             a, b = xs, ys
-        corrs[lag] = float(np.mean(a * b)) if len(a) > 10 else 0.0
+        corrs[lag] = sum(p * q for p, q in zip(a, b)) / len(a) if len(a) > 10 else 0.0
     best = max(corrs, key=lambda k: corrs[k])
     band = 2.58 / math.sqrt(n)
     significant = best > 0 and corrs[best] > band and corrs[best] > corrs[0] + band / 2
@@ -91,9 +125,7 @@ class CouplingTracker:
         ts = sorted(set(a) & set(b))[-(window + 1):]
         if len(ts) < 31:
             return None
-        ca = np.array([a[t] for t in ts])
-        cb = np.array([b[t] for t in ts])
-        return np.diff(np.log(ca)), np.diff(np.log(cb)), ts
+        return _log_returns([a[t] for t in ts]), _log_returns([b[t] for t in ts]), ts
 
     def compute(self, symbol: str) -> dict | None:
         if symbol == self.leader:
@@ -115,21 +147,22 @@ class CouplingTracker:
         # Residual (idiosyncratic) move over the session window: coin return minus beta * leader return.
         day = 86_400_000
         today = [i for i, t in enumerate(ts[1:]) if t // day == ts[-1] // day]
+        beta = st["beta"]
         if today:
-            out["residual_session_pct"] = round(100 * float(np.sum(x[today]) - st["beta"] * np.sum(y[today])), 3)
-        last60 = slice(-60, None)
-        resid = x[last60] - st["beta"] * y[last60]
-        resid_sd = float(np.std(x - st["beta"] * y)) or 1e-12
-        out["residual_1h_pct"] = round(100 * float(np.sum(resid)), 3)
-        out["residual_1h_z"] = round(float(np.sum(resid)) / (resid_sd * math.sqrt(len(resid))), 2)
+            out["residual_session_pct"] = round(100 * (sum(x[i] for i in today) - beta * sum(y[i] for i in today)), 3)
+        resid_all = [a - beta * b for a, b in zip(x, y)]
+        resid = resid_all[-60:]
+        resid_sd = _std(resid_all) or 1e-12
+        out["residual_1h_pct"] = round(100 * sum(resid), 3)
+        out["residual_1h_z"] = round(sum(resid) / (resid_sd * math.sqrt(len(resid))), 2)
         # Lead-lag on 5s returns.
         fa, fb = self.fast.get(symbol), self.fast.get(self.leader)
         if fa and fb and len(fa) > 70 and len(fb) > 70:
             da, db = dict(fa), dict(fb)
             common = sorted(set(da) & set(db))
             if len(common) > 70:
-                xa = np.diff(np.log([da[t] for t in common]))
-                xb = np.diff(np.log([db[t] for t in common]))
+                xa = _log_returns([da[t] for t in common])
+                xb = _log_returns([db[t] for t in common])
                 ll = lead_lag(xa, xb, self.max_lag)
                 if ll:
                     out["lag_s"] = ll["best_lag"] * 5

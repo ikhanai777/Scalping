@@ -1,7 +1,11 @@
-"""Historical data: Binance REST klines (paged) and data.binance.vision bulk dumps, cached as Parquet."""
+"""Historical data: Binance REST klines (paged) and data.binance.vision bulk dumps, cached as Parquet.
+
+pandas/pyarrow are optional: without them (e.g. inside the Android app) ``load_history`` falls back to
+REST klines with a small JSON cache."""
 from __future__ import annotations
 
 import io
+import json
 import logging
 import time
 import zipfile
@@ -9,7 +13,6 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
-import pandas as pd
 
 from ..models import TF_MS, Bar
 
@@ -19,14 +22,15 @@ COLS = ["open_time", "open", "high", "low", "close", "volume", "close_time", "qu
         "taker_buy_volume", "taker_buy_quote", "ignore"]
 
 
-def bars_from_df(df: pd.DataFrame) -> list[Bar]:
+def bars_from_df(df) -> list[Bar]:
     return [Bar(int(r.open_time), float(r.open), float(r.high), float(r.low), float(r.close), float(r.volume),
                 float(r.quote_volume), int(r.trades), float(r.taker_buy_volume), True)
             for r in df.itertuples(index=False)]
 
 
-def fetch_klines_rest(symbol: str, interval: str, start_ms: int, end_ms: int,
-                      base: str = "https://data-api.binance.vision", market: str = "spot") -> pd.DataFrame:
+def fetch_klines_raw(symbol: str, interval: str, start_ms: int, end_ms: int,
+                     base: str = "https://data-api.binance.vision", market: str = "spot") -> list[list]:
+    """Paged REST klines as raw Binance arrays (no pandas)."""
     path = "/api/v3/klines" if market == "spot" else "/fapi/v1/klines"
     limit = 1000 if market == "spot" else 1500
     rows, cur = [], start_ms
@@ -49,11 +53,16 @@ def fetch_klines_rest(symbol: str, interval: str, start_ms: int, end_ms: int,
             used = int(r.headers.get("x-mbx-used-weight-1m", "0") or 0)
             if used > 4000:
                 time.sleep(10)
-    df = pd.DataFrame(rows, columns=COLS)
-    return _typed(df)
+    return rows
 
 
-def _typed(df: pd.DataFrame) -> pd.DataFrame:
+def fetch_klines_rest(symbol: str, interval: str, start_ms: int, end_ms: int,
+                      base: str = "https://data-api.binance.vision", market: str = "spot"):
+    import pandas as pd
+    return _typed(pd.DataFrame(fetch_klines_raw(symbol, interval, start_ms, end_ms, base, market), columns=COLS))
+
+
+def _typed(df):
     if df.empty:
         return df
     for c in ("open", "high", "low", "close", "volume", "quote_volume", "taker_buy_volume"):
@@ -66,7 +75,8 @@ def _typed(df: pd.DataFrame) -> pd.DataFrame:
     return df[["open_time", "open", "high", "low", "close", "volume", "quote_volume", "trades", "taker_buy_volume"]]
 
 
-def fetch_vision_day(symbol: str, interval: str, day: date, market: str = "spot") -> pd.DataFrame | None:
+def fetch_vision_day(symbol: str, interval: str, day: date, market: str = "spot"):
+    import pandas as pd
     seg = "spot" if market == "spot" else "futures/um"
     url = f"{VISION}/{seg}/daily/klines/{symbol}/{interval}/{symbol}-{interval}-{day.isoformat()}.zip"
     r = httpx.get(url, timeout=60)
@@ -85,6 +95,11 @@ def load_history(symbol: str, interval: str, days: int, cache_dir: Path, market:
                  rest_base: str = "https://data-api.binance.vision", end: datetime | None = None) -> list[Bar]:
     """Load ``days`` of history ending now (UTC). Uses cached Parquet per day, data.binance.vision for
     complete past days and REST for today/missing days."""
+    try:
+        import pandas as pd
+        import pyarrow  # noqa: F401  (Parquet cache)
+    except ImportError:
+        return load_history_light(symbol, interval, days, cache_dir, market, rest_base, end)
     cache = cache_dir / "klines" / market / symbol / interval
     cache.mkdir(parents=True, exist_ok=True)
     end = end or datetime.now(timezone.utc)
@@ -120,3 +135,35 @@ def load_history(symbol: str, interval: str, days: int, cache_dir: Path, market:
     now_ms = int(end.timestamp() * 1000)
     df = df[df["open_time"] + TF_MS[interval] <= now_ms]          # closed bars only
     return bars_from_df(df)
+
+
+def load_history_light(symbol: str, interval: str, days: int, cache_dir: Path, market: str = "spot",
+                       rest_base: str = "https://data-api.binance.vision", end: datetime | None = None) -> list[Bar]:
+    """REST-only loader without pandas, caching complete days as JSON (used on Android)."""
+    cache = cache_dir / "klines-json" / market / symbol / interval
+    cache.mkdir(parents=True, exist_ok=True)
+    end = end or datetime.now(timezone.utc)
+    today = end.date()
+    now_ms = int(end.timestamp() * 1000)
+    rows: dict[int, list] = {}
+    for k in range(days, -1, -1):
+        day = today - timedelta(days=k)
+        f = cache / f"{day.isoformat()}.json"
+        if f.exists() and day != today:
+            batch = json.loads(f.read_text(encoding="utf-8"))
+        else:
+            start = int(datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp() * 1000)
+            try:
+                batch = fetch_klines_raw(symbol, interval, start, min(start + 86_400_000 - 1, now_ms), rest_base, market)
+            except httpx.HTTPError as e:
+                log.warning("REST klines unavailable for %s %s %s (%s); skipping that day", symbol, interval, day, e)
+                continue
+            if day != today and batch:
+                f.write_text(json.dumps(batch), encoding="utf-8")
+        for r in batch:
+            rows[int(r[0])] = r
+    out = []
+    for t in sorted(rows):
+        if t + TF_MS[interval] <= now_ms:
+            out.append(Bar.from_kline(rows[t]))
+    return out

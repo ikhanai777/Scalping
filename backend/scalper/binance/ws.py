@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import random
+import ssl
 import time
 from typing import Awaitable, Callable
 
@@ -14,6 +15,18 @@ import websockets
 log = logging.getLogger(__name__)
 
 Handler = Callable[[str, dict], Awaitable[None] | None]
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """Verify TLS with certifi's CA bundle when available (Android's Python has no system store)."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
+_SSL = _ssl_context()
 
 
 class _Conn:
@@ -38,7 +51,7 @@ class _Conn:
             url = f"{self.mgr.base}/stream?streams=" + "/".join(sorted(self.streams))
             try:
                 async with websockets.connect(url, open_timeout=15, ping_interval=None, max_size=2 ** 23,
-                                              close_timeout=3) as ws:
+                                              close_timeout=3, ssl=_SSL if url.startswith("wss") else None) as ws:
                     self.ws, self.connected = ws, True
                     self.connected_at = self.last_msg = time.time()
                     self.mgr.reconnects += 1 if backoff > 1 else 0

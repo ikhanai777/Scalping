@@ -22,7 +22,7 @@ function loadToggles(): Toggles {
   try { return { ...DEFAULT_TOGGLES, ...JSON.parse(localStorage.getItem("chartToggles") || "{}") }; } catch { return DEFAULT_TOGGLES; }
 }
 
-interface Props { symbol: string; tf: Tf; setTf: (t: Tf) => void; onPickPrice?: (p: number) => void }
+interface Props { symbol: string; tf: Tf; setTf: (t: Tf) => void; onPickPrice?: (p: number) => void; compact?: boolean }
 
 interface Series {
   candles: ISeriesApi<"Candlestick">; volume: ISeriesApi<"Histogram">; shade: ISeriesApi<"Histogram">;
@@ -32,7 +32,8 @@ interface Series {
 
 type Hover = { x: number; y: number; html: React.ReactNode } | null;
 
-export default function ChartPanel({ symbol, tf, setTf, onPickPrice }: Props) {
+export default function ChartPanel({ symbol, tf, setTf, onPickPrice, compact = false }: Props) {
+  const [showLayers, setShowLayers] = useState(false);
   const el = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const s = useRef<Series | null>(null);
@@ -45,6 +46,8 @@ export default function ChartPanel({ symbol, tf, setTf, onPickPrice }: Props) {
   const dataRef = useRef<ChartData | null>(null);
   const togglesRef = useRef(toggles);
   togglesRef.current = toggles;
+  const pickRef = useRef(onPickPrice);
+  pickRef.current = onPickPrice;
   const reloadTimer = useRef<number | null>(null);
 
   // ---------- chart creation ----------
@@ -101,14 +104,14 @@ export default function ChartPanel({ symbol, tf, setTf, onPickPrice }: Props) {
     };
     chart.subscribeCrosshairMove(onMove);
     const onClick = (p: MouseEventParams<Time>) => {
-      if (p.point && onPickPrice) {
+      if (p.point && pickRef.current) {
         const price = candles.coordinateToPrice(p.point.y);
-        if (price !== null) onPickPrice(price as number);
+        if (price !== null) pickRef.current(price as number);
       }
     };
     chart.subscribeClick(onClick);
     return () => { chart.unsubscribeCrosshairMove(onMove); chart.unsubscribeClick(onClick); chart.remove(); chartRef.current = null; s.current = null; };
-  }, [onPickPrice]);
+  }, []);  // created once; handlers read the latest props through refs
 
   // ---------- data loading ----------
   const load = useMemo(() => async (fit: boolean) => {
@@ -227,7 +230,28 @@ export default function ChartPanel({ symbol, tf, setTf, onPickPrice }: Props) {
   const lb = legend || (d ? d.forming || d.bars[d.bars.length - 1] : null);
   return (
     <div className="chart-wrap">
-      <div className="chart-head">
+      {compact ? (
+        <div className="chart-head compact">
+          <div className="toggles">
+            {TFS.map((t) => <button key={t} className={t === tf ? "active" : ""} onClick={() => setTf(t)}>{t}</button>)}
+          </div>
+          <div className="grow" />
+          <button className={showLayers ? "active" : ""} onClick={() => setShowLayers(!showLayers)}>Layers</button>
+          <div className="compact-strips">
+            {d && <MtfStrip mtf={d.mtf} label="Trend" />}
+            {d?.btc_mtf && symbol !== "BTCUSDT" && <MtfStrip mtf={d.btc_mtf} label="BTC" />}
+            {d && <CouplingBadge c={d.coupling} symbol={symbol} />}
+          </div>
+          {showLayers && (
+            <div className="toggles layers">
+              {TOGGLE_LABELS.map(([k, label]) => (
+                <button key={k} className={toggles[k] ? "active" : ""} onClick={() => setToggles({ ...toggles, [k]: !toggles[k] })}>{label}</button>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="chart-head">
         <span className="chart-sym">{symbol}</span>
         <div className="toggles">
           {TFS.map((t) => <button key={t} className={t === tf ? "active" : ""} onClick={() => setTf(t)}>{t}</button>)}
@@ -245,19 +269,20 @@ export default function ChartPanel({ symbol, tf, setTf, onPickPrice }: Props) {
           ))}
         </div>
       </div>
+      )}
       <div className="chart-area">
         <div ref={el} className="chart-el" />
         {lb && (
           <div className="legend">
-            <span>{fmtTime(lb.t, true)}</span>
+            {!compact && <span>{fmtTime(lb.t, true)}</span>}
             <span>O <b>{fmtPrice(lb.o)}</b></span><span>H <b>{fmtPrice(lb.h)}</b></span>
             <span>L <b>{fmtPrice(lb.l)}</b></span><span>C <b className={lb.c >= lb.o ? "up" : "dn"}>{fmtPrice(lb.c)}</b></span>
             <span>Δ <b className={2 * lb.tb - lb.v >= 0 ? "up" : "dn"}>{fmtNum(2 * lb.tb - lb.v, 2)}</b></span>
-            <span>RSI {fmtNum(ind.rsi as number, 1)}</span><span>ADX {fmtNum(ind.adx as number, 1)}</span>
-            <span>ATR {fmtPrice(ind.atr as number)}</span><span>RVOL {fmtNum(ind.rvol as number, 2)}</span>
+            {!compact && <><span>RSI {fmtNum(ind.rsi as number, 1)}</span><span>ADX {fmtNum(ind.adx as number, 1)}</span>
+            <span>ATR {fmtPrice(ind.atr as number)}</span><span>RVOL {fmtNum(ind.rvol as number, 2)}</span></>}
           </div>
         )}
-        {d && <TrendBox d={d} />}
+        {d && <TrendBox d={d} compact={compact} />}
         {hover && <div className="tooltip" style={{ left: Math.min(hover.x + 16, (el.current?.clientWidth || 800) - 340), top: Math.max(8, hover.y - 20) }}>{hover.html}</div>}
         {!d && !err && <div className="loading">Loading {symbol} {tf}…</div>}
         {err && <div className="loading">Could not load chart: {err}</div>}
@@ -266,21 +291,22 @@ export default function ChartPanel({ symbol, tf, setTf, onPickPrice }: Props) {
   );
 }
 
-function TrendBox({ d }: { d: ChartData }) {
+function TrendBox({ d, compact }: { d: ChartData; compact?: boolean }) {
   const t = d.trend;
+  const [open, setOpen] = useState(!compact);
   if (!t.direction || t.state === "NONE") {
     return <div className="trend-box"><span className="muted">Trend Catcher {d.tf}:</span> no trend · score {fmtNum(t.score, 0)}</div>;
   }
   const up = t.direction === "UP";
   return (
-    <div className="trend-box">
+    <div className={`trend-box ${compact ? "compact" : ""}`} onClick={() => compact && setOpen(!open)}>
       <div><b className={up ? "up" : "dn"}>{up ? "▲" : "▼"} {d.tf} {t.state}</b> · score {fmtNum(t.score, 0)}
         {t.p_continue_2atr !== null && <> · P(+2 ATR) <b>{Math.round(t.p_continue_2atr * 100)}%</b></>}
         {t.trail_stop !== null && <> · trail {fmtPrice(t.trail_stop)}</>}
       </div>
-      {t.origin && <div className="muted">origin {fmtPrice(t.origin.price)} @ {fmtTime(t.origin.ts)} · detected {t.detected && fmtTime(t.detected.ts)}</div>}
-      {t.drivers.length > 0 && <div>{t.drivers.map((x) => <span key={x} className="chip">{x}</span>)}</div>}
-      {t.exhaustion.length > 0 && <div className="warn">exhaustion: {t.exhaustion.join(", ")}</div>}
+      {open && t.origin && <div className="muted">origin {fmtPrice(t.origin.price)} @ {fmtTime(t.origin.ts)} · detected {t.detected && fmtTime(t.detected.ts)}</div>}
+      {open && t.drivers.length > 0 && <div>{t.drivers.map((x) => <span key={x} className="chip">{x}</span>)}</div>}
+      {open && t.exhaustion.length > 0 && <div className="warn">exhaustion: {t.exhaustion.join(", ")}</div>}
     </div>
   );
 }

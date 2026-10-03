@@ -45,6 +45,9 @@ cd frontend && npm install && npm run build && cd ..
 scalper serve                    # http://127.0.0.1:8000
 ```
 
+**Android:** a 23 MB APK that runs the whole terminal on the phone — see [`docs/ANDROID.md`](docs/ANDROID.md)
+(APK in [`releases/`](releases/)).
+
 **Windows 10:** step-by-step runbook (written so an AI agent can follow it) in
 [`docs/DEPLOY_WINDOWS_AGENT.md`](docs/DEPLOY_WINDOWS_AGENT.md).
 
@@ -124,7 +127,7 @@ backend/scalper/
   ml/            features + LightGBM meta-model
   news/          sources, tagging, sentiment, impact, vetoes
   execution/     risk engine, paper broker, signed Binance executor (experimental)
-  engine.py      live orchestration     api.py  FastAPI + WebSocket     cli.py  commands
+  engine.py      live orchestration     api.py  Starlette + WebSocket    cli.py  commands
 frontend/src/    React UI (chart, scanner, DOM, tabs)
 config/          default.yaml
 docs/SPEC.md     product & technical specification

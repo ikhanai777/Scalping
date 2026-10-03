@@ -96,7 +96,7 @@ $Py = "$Repo\.venv\Scripts\python.exe"
 
 **Check:**
 ```powershell
-& $Py -c "import scalper, lightgbm, fastapi; print('backend ok', scalper.__version__)"
+& $Py -c "import scalper, lightgbm, starlette; print('backend ok', scalper.__version__)"
 & "$Repo\.venv\Scripts\scalper.exe" --help
 ```
 

@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 class Alerts:
     def __init__(self, cfg: dict):
         self.cfg = cfg
+        self.local_hook = None             # callable(title, body): native notifications (Android app)
         self.sent: list[dict] = []
         self._last: dict[str, float] = {}
         self.cli = httpx.AsyncClient(timeout=10)
@@ -29,6 +30,12 @@ class Alerts:
         if key:
             self._last[key] = now
         self.sent = (self.sent + [{"ts": int(now * 1000), "text": text}])[-200:]
+        if self.local_hook and self.cfg.get("local_notifications", True):
+            title, _, body = text.partition("\n")
+            try:
+                self.local_hook(title[:120], body[:500])
+            except Exception as e:  # noqa: BLE001
+                log.debug("local notification failed: %s", e)
         if self.enabled:
             asyncio.create_task(self._deliver(text))
 

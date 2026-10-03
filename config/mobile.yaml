@@ -1,0 +1,20 @@
+# Mobile profile (Android app): loaded on top of default.yaml when SCALPER_PROFILE=mobile.
+# Lighter on CPU, battery and mobile data. Change these in the app's Settings screen.
+universe:
+  trend_universe_size: 20       # pairs with full trend tracking
+  radar_max_symbols: 60         # pairs scanned every second by the pump radar (~40 KB/s each 100 pairs)
+  radar_min_quote_volume: 10000000
+timeframes:
+  history_bars: 400
+bootstrap:
+  enabled: true
+  mode: thread                  # Android has no Python multiprocessing
+  symbols: 4
+  days: 3
+news:
+  poll_seconds: 300
+alerts:
+  local_notifications: true     # Android notifications for validated signals, pumps and confirmed trends
+server:
+  host: 127.0.0.1
+  port: 8765
