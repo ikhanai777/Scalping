@@ -45,6 +45,9 @@ class Strategy:
     timeframes: tuple[str, ...] = ("1m", "5m", "15m")   # bar closes this strategy runs on
     regimes: tuple[str, ...] = ()                 # empty = any
     needs: tuple[str, ...] = ()                   # "book", "derivs", "liquidations" for live-only data
+    # How the trend filter treats this strategy: "follow" needs a confirmed trend in its direction,
+    # "revert" (mean reversion / sweeps) only must not fight one, "any" skips the alignment check.
+    trend_role: str = "follow"
     description: str = ""
 
     def __init__(self, params: dict | None = None):

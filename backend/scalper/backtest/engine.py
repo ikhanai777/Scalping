@@ -10,8 +10,8 @@ from ..detectors.pump import PumpDetector
 from ..detectors.trend import TrendStats
 from ..models import Bar
 from ..signals.engine import SignalEngine
-from ..signals.store import StatsStore, strategy_id
-from ..sim import Costs, TradeSim
+from ..signals.store import StatsStore, slice_key, strategy_id
+from ..sim import Costs, TradeSim, as_maker
 from ..stats import OutcomeStats
 from ..strategies.base import Context
 from ..strategies.builtin import BAR_STRATEGIES, BtcCatchup, PumpMomentum, build_strategies
@@ -29,17 +29,30 @@ class BacktestResult:
     start: int = 0
     end: int = 0
 
+    def filled(self) -> list[dict]:
+        return [t for t in self.trades if t["exit_reason"] not in ("expired", "missed")]
+
     def by_strategy(self) -> dict[str, list[float]]:
         out: dict[str, list[float]] = {}
-        for t in self.trades:
+        for t in self.filled():
             out.setdefault(strategy_id(t["strategy"]), []).append(t["r"])
         return out
 
-    def metrics(self, windows: int = 6) -> dict:
+    def by_slice(self) -> dict[str, list[float]]:
+        """R multiples per "strategy|timeframe" (the keys the live signal engine looks up)."""
+        out: dict[str, list[float]] = {}
+        for t in self.filled():
+            out.setdefault(slice_key(t["strategy"], t["tf"]), []).append(t["r"])
+        return out
+
+    def metrics(self, windows: int = 6, slices: bool = False) -> dict:
         res = {}
-        for sid, rs in self.by_strategy().items():
-            trades = [t for t in self.trades if strategy_id(t["strategy"]) == sid]
-            res[sid] = strategy_metrics(trades, self.start, self.end, windows)
+        groups: dict[str, list[dict]] = {}
+        for t in self.trades:
+            key = slice_key(t["strategy"], t["tf"]) if slices else strategy_id(t["strategy"])
+            groups.setdefault(key, []).append(t)
+        for key, trades in groups.items():
+            res[key] = strategy_metrics(trades, self.start, self.end, windows)
         res["_all"] = strategy_metrics(self.trades, self.start, self.end, windows)
         return res
 
@@ -62,7 +75,8 @@ def bootstrap_ci(rs: list[float], n: int = 1000, seed: int = 0) -> tuple[float, 
 
 
 def strategy_metrics(trades: list[dict], start: int, end: int, windows: int = 6) -> dict:
-    trades = sorted((t for t in trades if t["exit_reason"] != "expired"), key=lambda t: t["signal_ts"])
+    orders = len(trades)
+    trades = sorted((t for t in trades if t["exit_reason"] not in ("expired", "missed")), key=lambda t: t["signal_ts"])
     rs = [t["r"] for t in trades]
     st = OutcomeStats()
     for r in rs:
@@ -89,6 +103,8 @@ def strategy_metrics(trades: list[dict], start: int, end: int, windows: int = 6)
     for t in trades:
         reasons[t["exit_reason"]] = reasons.get(t["exit_reason"], 0) + 1
     out["exit_reasons"] = reasons
+    out["orders"] = orders
+    out["fill_rate"] = round(len(trades) / orders, 3) if orders else None
     out["gates"] = promotion_gates(out)
     return out
 
@@ -123,6 +139,10 @@ class Backtester:
         self.engine = SignalEngine(sig_cfg, StatsStore(), self.costs)
         self.engine.regimes_from(all_strats)
         self.min_conf = sig_cfg.get("min_confluence", 55)
+        self.maker = sig_cfg.get("entry_mode", "market") == "maker"
+        self.maker_offset = sig_cfg.get("maker_offset_atr", 0.0)
+        self.maker_expiry = sig_cfg.get("maker_expiry_bars", 2)
+        self.maker_through = sig_cfg.get("maker_through_bps", 1.0) / 10_000
 
     def run(self, data: dict[str, list[Bar]], progress=None) -> BacktestResult:
         res = BacktestResult()
@@ -199,6 +219,8 @@ class Backtester:
         key = (c.symbol, strategy_id(c.strategy), c.tf)
         if key in open_sims:
             return
+        if self.maker:
+            c = as_maker(c, ctx.htf[c.tf].v.get("atr") if c.tf in ctx.htf else ctx.ind.v.get("atr"), self.maker_offset)
         conf, parts = self.engine.confluence(c, ctx)
         if self.apply_filters:
             if self.engine.vetoes(c, ctx, {}) or conf < self.min_conf:
@@ -207,7 +229,8 @@ class Backtester:
         if self.collect:
             from ..ml.features import feature_row
             feat = feature_row(c, ctx, conf, parts)
-        open_sims[key] = (TradeSim(c, self.costs), feat)
+        open_sims[key] = (TradeSim(c, self.costs, maker_through=self.maker_through,
+                                   maker_expiry_bars=self.maker_expiry), feat)
 
     def _record(self, res: BacktestResult, sim: TradeSim, feat: dict | None) -> None:
         if sim.status != "done" and sim.status != "open":
@@ -216,9 +239,9 @@ class Backtester:
             return                          # unfinished at end of data: excluded
         row = sim.to_json()
         res.trades.append(row)
-        if self.collect and feat is not None:
+        if self.collect and feat is not None and row["exit_reason"] not in ("expired", "missed"):
             res.features.append({**feat, "_r": row["r"], "_ts": row["signal_ts"], "_strategy": strategy_id(row["strategy"]),
-                                 "_exit": row["exit_reason"]})
+                                 "_tf": row["tf"], "_exit": row["exit_reason"]})
 
 
 def run_pump_backtest(cfg: dict, data_1s: dict[str, list[Bar]], market: str = "spot") -> dict:

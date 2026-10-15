@@ -7,7 +7,7 @@ or server.
 
 | | |
 |---|---|
-| APK | `releases/ScalpingTerminal-0.2.0-arm64.apk` (≈ 23 MB) |
+| APK | `releases/ScalpingTerminal-0.3.0-arm64.apk` (≈ 23 MB) |
 | Android | 7.0+ (API 24), 64-bit ARM (arm64-v8a) — practically every phone since ~2017 |
 | Permissions | Internet, notifications, foreground service |
 | Data usage | ≈ 40 KB/s per 100 coins on the pump radar (default 60 coins); trend tracking and the chart add little |

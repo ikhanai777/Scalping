@@ -15,25 +15,30 @@ def _symbols(s: str) -> list[str]:
     return [x.strip().upper() for x in s.split(",") if x.strip()]
 
 
-def _load(cfg, symbols, days, market="spot", interval="1m"):
+def _end(args):
+    v = getattr(args, "end", None)
+    return datetime.fromisoformat(v).replace(tzinfo=timezone.utc) if v else None
+
+
+def _load(cfg, symbols, days, market="spot", interval="1m", end=None):
     from .backtest.data import load_history
     out = {}
     for s in symbols:
         t = time.time()
         rest = cfg.binance.spot_rest if market == "spot" else cfg.binance.futures_rest
-        out[s] = load_history(s, interval, days, data_dir(cfg), market, rest)
+        out[s] = load_history(s, interval, days, data_dir(cfg), market, rest, end)
         print(f"  loaded {s:<12} {len(out[s]):>7} bars ({time.time() - t:.1f}s)", file=sys.stderr)
     return out
 
 
 def _table(metrics: dict) -> str:
-    cols = ["n", "win_rate", "expectancy_r", "profit_factor", "total_r", "max_dd_r", "walk_forward_positive"]
-    lines = [f"{'strategy':<24}" + "".join(f"{c:>14}" for c in cols) + "  gate"]
+    cols = ["n", "fill_rate", "win_rate", "expectancy_r", "profit_factor", "total_r", "max_dd_r", "walk_forward_positive"]
+    lines = [f"{'strategy':<28}" + "".join(f"{c:>13}" for c in cols) + "  gate"]
     for sid, m in sorted(metrics.items()):
-        row = f"{sid:<24}"
+        row = f"{sid:<28}"
         for c in cols:
             v = m.get(c)
-            row += f"{('—' if v is None else (f'{v:.3f}' if isinstance(v, float) else str(v))):>14}"
+            row += f"{('—' if v is None else (f'{v:.3f}' if isinstance(v, float) else str(v))):>13}"
         row += "  " + ("PASS" if m.get("gates", {}).get("passed") else "fail")
         lines.append(row)
     return "\n".join(lines)
@@ -51,12 +56,19 @@ def cmd_serve(args, cfg):
 def cmd_backtest(args, cfg):
     from .backtest.engine import Backtester
     from .signals.store import StatsStore
-    data = _load(cfg, _symbols(args.symbols), args.days, args.market)
+    sig = cfg.setdefault("signals", {})
+    if args.entry:
+        sig["entry_mode"] = args.entry
+    if args.trend_filter is not None:
+        sig.setdefault("trend_filter", {})["enabled"] = args.trend_filter
+    data = _load(cfg, _symbols(args.symbols), args.days, args.market, end=_end(args))
     t = time.time()
     bt = Backtester(cfg, args.market, sensitivity=args.sensitivity, apply_filters=not args.no_filters)
     res = bt.run(data, progress=lambda i, n: print(f"  {i / n:.0%}", end="\r", file=sys.stderr))
-    m = res.metrics()
-    print(f"\nBacktest {args.days}d on {', '.join(data)} ({args.market}, fees+slippage included) in {time.time() - t:.0f}s\n")
+    m = res.metrics(slices=args.slices)
+    tfilt = (sig.get("trend_filter") or {}).get("enabled", False)
+    print(f"\nBacktest {args.days}d on {', '.join(data)} ({args.market}, entries: {sig.get('entry_mode', 'market')}, "
+          f"trend filter: {'on' if tfilt else 'off'}; fees+slippage included) in {time.time() - t:.0f}s\n")
     print(_table(m))
     print("\nTrend Catcher (CONFIRMED trends that extended ≥ 2 ATR):")
     for tf, s in res.trend_stats.items():
@@ -66,8 +78,7 @@ def cmd_backtest(args, cfg):
               f"reached 2ATR {c['win_rate'] if c['win_rate'] is not None else '—'}  (n={c['n']})")
     if args.save_stats:
         st = StatsStore(data_dir(cfg) / "stats.json")
-        for sid, rs in res.by_strategy().items():
-            st.set_backtest(sid, rs)
+        st.replace_backtest(res.by_slice())
         st.save()
         print(f"\nSaved per-strategy statistics to {data_dir(cfg) / 'stats.json'} (used by the live signal engine)")
     if args.out:
@@ -149,6 +160,12 @@ def main(argv=None):
     b.add_argument("--market", default="spot", choices=["spot", "futures"])
     b.add_argument("--sensitivity", default=None, choices=[None, "early", "balanced", "conservative"])
     b.add_argument("--no-filters", action="store_true", help="skip confluence/cost/regime filters")
+    b.add_argument("--entry", choices=["market", "maker"], help="override signals.entry_mode")
+    b.add_argument("--trend-filter", dest="trend_filter", action="store_true", default=None,
+                   help="require/allow trades only with confirmed higher-timeframe trends")
+    b.add_argument("--no-trend-filter", dest="trend_filter", action="store_false")
+    b.add_argument("--slices", action="store_true", help="report per strategy × timeframe")
+    b.add_argument("--end", help="end date (UTC, YYYY-MM-DD) for a reproducible window; default now")
     b.add_argument("--save-stats", action="store_true", help="store results as the live engine's strategy stats")
     b.add_argument("--out", help="write trades + metrics JSON")
     t = sub.add_parser("evaluate-trends", help="Trend Catcher recall/precision vs labelled large moves")

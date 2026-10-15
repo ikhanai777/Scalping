@@ -95,9 +95,10 @@ export interface Status {
 }
 
 export interface StratStats { n: number; win_rate: number | null; p_win: number; p_win_ci: [number, number]; expectancy_r: number; profit_factor: number | null; recent_expectancy_r: number }
+export interface SliceStats { backtest: StratStats; live: StratStats; shadow: string | null }
 export interface StrategyInfo {
   id: string; version: string; description: string; timeframes: string[]; regimes: string[]; needs: string[];
-  stats: { backtest: StratStats; live: StratStats; shadow: string | null } | null;
+  stats: { backtest: StratStats; live: StratStats; shadow: string | null; slices?: Record<string, SliceStats> } | null;
   model: Record<string, unknown> | null;
 }
 

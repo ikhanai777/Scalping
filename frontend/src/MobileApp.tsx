@@ -1,7 +1,7 @@
 // Phone layout: compact top bar, one screen at a time, bottom navigation, trade sheet.
 import { useCallback, useEffect, useState } from "react";
 import { get, post } from "./api";
-import { CouplingTable, Positions, Trends } from "./components/BottomTabs";
+import { CouplingTable, Positions, SliceChips, Trends } from "./components/BottomTabs";
 import ChartPanel from "./components/ChartPanel";
 import RightColumn from "./components/RightColumn";
 import Watchlist from "./components/Watchlist";
@@ -232,7 +232,7 @@ function MStrategies() {
   if (!d) return <div className="empty">Loading…</div>;
   return (
     <div className="m-list">
-      <div className="muted" style={{ padding: "4px 8px" }}>Net of fees and slippage. Strategies with negative expected value after costs are suppressed automatically.</div>
+      <div className="muted" style={{ padding: "4px 8px" }}>Net of fees and slippage, per timeframe. A strategy × timeframe is "validated" only when its expectancy is positive with 90% confidence; negative ones are suppressed.</div>
       {d.strategies.map((s) => {
         const b = s.stats?.backtest, l = s.stats?.live;
         return (
@@ -243,6 +243,7 @@ function MStrategies() {
               <span>backtest {b && b.n ? `${b.n} · ${Math.round((b.win_rate ?? 0) * 100)}% · ${fmtNum(b.expectancy_r, 2)}R` : "no data"}</span>
               <span>live {l && l.n ? `${l.n} · ${Math.round((l.win_rate ?? 0) * 100)}% · ${fmtNum(l.expectancy_r, 2)}R` : "no data"}</span>
             </div>
+            <SliceChips slices={s.stats?.slices} />
           </div>
         );
       })}

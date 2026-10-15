@@ -243,7 +243,7 @@ export function Strategies() {
   return (
     <div>
       <div className="muted" style={{ padding: "4px 8px" }}>
-        Statistics are net of fees and slippage. Backtest stats come from the startup bootstrap ({String((d.bootstrap as { status?: string } | null)?.status ?? "not run")}) or <span className="mono">scalper backtest --save-stats</span>.
+        Statistics are net of fees and slippage and judged per timeframe (chips). "Validated" requires the 90% confidence interval of expectancy above zero. Backtest stats come from the startup bootstrap ({String((d.bootstrap as { status?: string } | null)?.status ?? "not run")}) or <span className="mono">scalper backtest --save-stats</span>.
         A strategy whose live results fall below its backtest confidence band is moved to shadow mode automatically.
       </div>
       <table className="t">
@@ -253,7 +253,7 @@ export function Strategies() {
             <tr key={s.id}>
               <td><b>{s.id}</b></td><td>{s.timeframes.join(", ")}</td>
               <td className="ellipsis" style={{ maxWidth: 380 }} title={s.description}>{s.description}{s.needs.length ? <span className="warn"> (live data: {s.needs.join(", ")})</span> : null}</td>
-              <td className="mono">{cell(s.stats?.backtest)}</td><td className="mono">{cell(s.stats?.live)}</td>
+              <td className="mono">{cell(s.stats?.backtest)}<SliceChips slices={s.stats?.slices} /></td><td className="mono">{cell(s.stats?.live)}</td>
               <td>{s.model ? `AUC ${(s.model as { auc_oos?: number }).auc_oos ?? "—"}` : <span className="faint">—</span>}</td>
               <td>{s.stats?.shadow ? <span className="warn" title={s.stats.shadow}>shadow</span> : <span className="up">active</span>}</td>
             </tr>
@@ -261,6 +261,20 @@ export function Strategies() {
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** Per-timeframe expectancy chips: signals are validated per strategy × timeframe. */
+export function SliceChips({ slices }: { slices?: Record<string, { backtest: { n: number; expectancy_r: number } }> }) {
+  if (!slices) return null;
+  const order = ["1s", "1m", "5m", "15m", "1h", "4h", "all"];
+  const keys = Object.keys(slices).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  return (
+    <div>{keys.map((tf) => {
+      const b = slices[tf].backtest;
+      if (!b.n) return null;
+      return <span key={tf} className={`chip ${b.expectancy_r > 0 ? "up" : "dn"}`} title={`${tf}: ${b.n} trades, ${b.expectancy_r.toFixed(3)}R per trade`}>{tf} {b.expectancy_r >= 0 ? "+" : ""}{b.expectancy_r.toFixed(2)}R</span>;
+    })}</div>
   );
 }
 

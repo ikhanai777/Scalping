@@ -51,6 +51,7 @@ class TrendPullback(Strategy):
 
 class VwapReversion(Strategy):
     id = "S2_vwap_reversion"
+    trend_role = "revert"
     description = "Fade VWAP ±2σ extremes in ranging markets with divergence/absorption"
     regimes = ("ranging", "transition")
 
@@ -117,6 +118,7 @@ class SqueezeBreakout(Strategy):
 
 class LiquiditySweep(Strategy):
     id = "S4_liquidity_sweep"
+    trend_role = "revert"
     description = "Sweep of prior swing/session low (high) then reclaim with CVD divergence or absorption"
 
     def on_bar(self, ctx: Context) -> list[Candidate]:
@@ -156,6 +158,7 @@ class LiquiditySweep(Strategy):
 
 class OrderflowMomentum(Strategy):
     id = "S5_orderflow_momentum"
+    trend_role = "any"
     description = "Tick-level: sustained book imbalance + microprice skew + aggressive burst (live only)"
     needs = ("book",)
 
@@ -229,6 +232,7 @@ class SessionBreakout(Strategy):
 
 class LiquidationCascade(Strategy):
     id = "S7_liquidation_cascade"
+    trend_role = "revert"
     timeframes = ("1m",)
     description = "Fade liquidation bursts at VWAP extremes with absorption (futures data, live only)"
     needs = ("liquidations",)
@@ -311,6 +315,7 @@ class TrendCatcherEntry(Strategy):
 class PumpMomentum(Strategy):
     """S11 is event-driven: the engine calls ``from_event`` with Pump & Dump Detector events."""
     id = "S11_pump_momentum"
+    trend_role = "any"
     description = "Ride IGNITION/CONFIRMED pump/dump events with a strict chase limit and half risk"
 
     @classmethod
@@ -348,6 +353,7 @@ class PumpMomentum(Strategy):
 class BtcCatchup(Strategy):
     """S12 is cross-symbol: the engine calls ``candidates`` when BTC confirms a trend."""
     id = "S12_btc_catchup"
+    trend_role = "any"
     description = "BTC confirms a move; high-beta followers that have not moved yet catch up"
 
     @classmethod

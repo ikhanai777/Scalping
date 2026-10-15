@@ -159,12 +159,15 @@ def test_signal_engine_cost_veto_and_unvalidated():
 
 def test_signal_engine_uses_stats_and_ev():
     st = StatsStore()
-    st.set_backtest("T", [1.3] * 40 + [-1.0] * 60)          # 40% win, +1.3R / -1R => EV < 0
+    st.set_backtest("T|1m", [1.3] * 40 + [-1.0] * 60)       # 40% win, +1.3R / -1R => EV < 0
     eng = SignalEngine({"min_confluence": 0, "min_p_win": 0.35}, st, NO_COST)
     assert eng.evaluate(_cand(entry=100, stop=98, targets=(102, 104)), None) is None   # EV <= 0 rejected
-    st.set_backtest("T", [2.0] * 45 + [-1.0] * 55)
+    st.set_backtest("T|1m", [2.0] * 45 + [-1.0] * 55)
     sig = eng.evaluate(_cand(entry=100, stop=98, targets=(102, 104)), None)
     assert sig.validated and sig.probability_source == "stats" and sig.expected_r > 0
+    # statistics are per timeframe: the same strategy on 15m has no stats yet -> unvalidated
+    sig15 = eng.evaluate(_cand(entry=100, stop=98, targets=(102, 104), tf="15m"), None)
+    assert sig15 is not None and not sig15.validated
 
 
 # ---------------------------------------------------------------- news
@@ -210,3 +213,55 @@ def test_trader_rejects_withdrawal_keys(monkeypatch):
     asyncio.run(t.start())
     out = asyncio.run(t.bracket("BTCUSDT", "LONG", 0.01, 49000, 52000))
     assert calls.count("/fapi/v1/order") == 3 and out["entry"]["orderId"] == 1
+
+
+# ---------------------------------------------------------------- maker entries
+def test_maker_entry_needs_trade_through_and_expires():
+    from scalper.sim import as_maker
+    c = as_maker(_cand(entry=100, stop=99, targets=(101, 102), ts=0), atr=1.0, offset_atr=0.0)
+    costs = Costs(0.0005, 0.0005, 0.0002, 0.0002, 0.0002)
+    sim = TradeSim(c, costs)
+    assert not sim.on_bar(_bar(60_000, 100.2, 100.3, 100.0, 100.1))     # touch only: no fill
+    assert sim.status == "pending"
+    assert sim.on_bar(_bar(120_000, 100.1, 100.4, 100.05, 100.3))        # 2 bars passed: missed
+    assert sim.exit_reason == "missed" and sim.r == 0.0
+
+
+def test_maker_fill_bar_cannot_hit_target_and_uses_maker_fee():
+    from scalper.sim import as_maker
+    c = as_maker(_cand(entry=100, stop=99, targets=(101, 102), ts=0), atr=1.0)
+    costs = Costs(0.0005, 0.0005, 0.0002, 0.0002, 0.0002)
+    sim = TradeSim(c, costs)
+    assert not sim.on_bar(_bar(60_000, 100.1, 101.5, 99.9, 101.2))       # fills (trades through) + spikes to TP1
+    assert sim.status == "open" and sim.targets_hit == 0                 # TP not credited on the fill bar
+    assert sim.entry == 100.0 and sim.fees_paid == pytest.approx(0.0002 * 100)
+    sim.on_bar(_bar(120_000, 101.2, 102.5, 101.0, 102.2))
+    assert sim.exit_reason == "tp2"
+
+
+def test_trend_filter_vetoes_counter_trend_and_requires_alignment():
+    from types import SimpleNamespace as NS
+    from scalper.strategies.base import Context
+    eng = SignalEngine({"min_confluence": 0, "trend_filter": {"enabled": True, "tfs": ["5m", "15m"]}}, StatsStore(), NO_COST)
+    eng.roles = {"T": "follow", "R": "revert"}
+    ind = NS(v={}, regime=lambda: "trend_up")
+    def ctx(dir5, st5, dir15=0, st15=0):
+        return Context("X", "1m", 0, ind, {}, {"5m": NS(direction=dir5, state=st5), "15m": NS(direction=dir15, state=st15)})
+    long = _cand(entry=100, stop=98, targets=(102, 104))
+    assert any("against" in v for v in eng.vetoes(long, ctx(-1, 2), {}))          # confirmed 5m downtrend
+    assert any("no confirmed" in v for v in eng.vetoes(long, ctx(0, 0), {}))      # follow role needs a trend
+    assert not [v for v in eng.vetoes(long, ctx(1, 3), {}) if "trend" in v]        # aligned with mature uptrend
+    rev = Candidate("R@1", "X", "1m", "LONG", 100, 98, [Target(102, 100)], 0)
+    assert not [v for v in eng.vetoes(rev, ctx(0, 0), {}) if "trend" in v]         # revert role: no alignment needed
+    assert any("against" in v for v in eng.vetoes(rev, ctx(1, 0, -1, 2), {}))      # ... but not against 15m trend
+
+
+def test_positive_but_insignificant_edge_is_unproven():
+    st = StatsStore()
+    st.set_backtest("T|1m", [2.0, -1.0] * 15 + [-1.0] * 2)        # small sample, slightly positive
+    eng = SignalEngine({"min_confluence": 0, "min_p_win": 0.3}, st, NO_COST)
+    sig = eng.evaluate(_cand(entry=100, stop=98, targets=(102, 104)), None)
+    assert sig is not None and not sig.validated and sig.probability_source == "stats (unproven)"
+    st.set_backtest("T|1m", [2.0, -1.0] * 400)                     # large sample, clear edge
+    sig = eng.evaluate(_cand(entry=100, stop=98, targets=(102, 104)), None)
+    assert sig.validated and sig.probability_source == "stats"

@@ -1,4 +1,8 @@
-"""Per-strategy outcome statistics (backtest + live), persisted as JSON."""
+"""Outcome statistics per strategy × timeframe slice (backtest + live), persisted as JSON.
+
+Keys are ``"<strategy id>|<timeframe>"`` (see ``slice_key``) so that, e.g., a strategy that works on 15m
+but not on 1m is judged separately on each. Legacy keys without a timeframe are still loaded.
+"""
 from __future__ import annotations
 
 import json
@@ -8,7 +12,19 @@ from ..stats import OutcomeStats
 
 
 def strategy_id(key: str) -> str:
-    return key.split("@")[0]
+    return key.split("@")[0].split("|")[0]
+
+
+def slice_key(strategy: str, tf: str) -> str:
+    return f"{strategy_id(strategy)}|{tf}"
+
+
+def _norm(key: str) -> str:
+    """Accept "S1@1.0.0|5m", "S1|5m" or a bare strategy id."""
+    if "|" in key:
+        sid, tf = key.split("|", 1)
+        return f"{strategy_id(sid)}|{tf}"
+    return strategy_id(key)
 
 
 class StatsStore:
@@ -21,20 +37,30 @@ class StatsStore:
             self.load()
 
     def add(self, key: str, r: float, source: str = "live") -> None:
-        sid = strategy_id(key)
+        sid = _norm(key)
         book = self.live if source == "live" else self.backtest
         book.setdefault(sid, OutcomeStats()).add(r)
         if source == "live":
             self._check_degrade(sid)
 
-    def set_backtest(self, sid: str, rs: list[float]) -> None:
+    def set_backtest(self, key: str, rs: list[float]) -> None:
         st = OutcomeStats()
         for r in rs:
             st.add(r)
-        self.backtest[sid] = st
+        self.backtest[_norm(key)] = st
+
+    def replace_backtest(self, by_key: dict[str, list[float]]) -> None:
+        """Replace all backtest statistics (keys are slice keys)."""
+        self.backtest = {}
+        for k, rs in by_key.items():
+            self.set_backtest(k, rs)
+
+    def is_shadow(self, key: str) -> str | None:
+        k = _norm(key)
+        return self.shadow.get(k) or self.shadow.get(strategy_id(k))
 
     def combined(self, key: str) -> OutcomeStats:
-        sid = strategy_id(key)
+        sid = _norm(key)
         out = OutcomeStats()
         for book in (self.backtest, self.live):
             for r in book.get(sid, OutcomeStats()).rs:
@@ -54,10 +80,21 @@ class StatsStore:
             del self.shadow[sid]
 
     def summary(self) -> dict:
-        ids = sorted(set(self.backtest) | set(self.live))
-        return {sid: {"backtest": self.backtest.get(sid, OutcomeStats()).summary(),
-                      "live": self.live.get(sid, OutcomeStats()).summary(),
-                      "shadow": self.shadow.get(sid)} for sid in ids}
+        """Per strategy: pooled backtest/live stats plus a per-timeframe breakdown."""
+        out: dict = {}
+        for key in sorted(set(self.backtest) | set(self.live)):
+            sid, _, tf = key.partition("|")
+            e = out.setdefault(sid, {"_bt": OutcomeStats(), "_lv": OutcomeStats(), "slices": {}, "shadow": None})
+            bt, lv = self.backtest.get(key, OutcomeStats()), self.live.get(key, OutcomeStats())
+            for r in bt.rs:
+                e["_bt"].add(r)
+            for r in lv.rs:
+                e["_lv"].add(r)
+            e["slices"][tf or "all"] = {"backtest": bt.summary(), "live": lv.summary(), "shadow": self.shadow.get(key)}
+            e["shadow"] = e["shadow"] or self.shadow.get(key)
+        for sid, e in out.items():
+            e["backtest"], e["live"] = e.pop("_bt").summary(), e.pop("_lv").summary()
+        return out
 
     def save(self) -> None:
         if not self.path:

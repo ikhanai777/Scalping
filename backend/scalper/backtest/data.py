@@ -91,6 +91,14 @@ def fetch_vision_day(symbol: str, interval: str, day: date, market: str = "spot"
     return _typed(df.astype({"open_time": "int64"}))
 
 
+def _atomic_write(path: Path, write) -> None:
+    """Write via a temp file + rename so concurrent readers never see a partial cache file."""
+    import os
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    write(tmp)
+    os.replace(tmp, path)
+
+
 def load_history(symbol: str, interval: str, days: int, cache_dir: Path, market: str = "spot",
                  rest_base: str = "https://data-api.binance.vision", end: datetime | None = None) -> list[Bar]:
     """Load ``days`` of history ending now (UTC). Uses cached Parquet per day, data.binance.vision for
@@ -109,8 +117,11 @@ def load_history(symbol: str, interval: str, days: int, cache_dir: Path, market:
         day = today - timedelta(days=k)
         f = cache / f"{day.isoformat()}.parquet"
         if f.exists() and day != today:
-            frames.append(pd.read_parquet(f))
-            continue
+            try:
+                frames.append(pd.read_parquet(f))
+                continue
+            except Exception:                 # corrupt/partial cache file: fetch the day again
+                f.unlink(missing_ok=True)
         df = None
         if day < today:
             try:
@@ -127,7 +138,7 @@ def load_history(symbol: str, interval: str, days: int, cache_dir: Path, market:
                 df = None
         if df is not None and not df.empty:
             if day != today:
-                df.to_parquet(f)
+                _atomic_write(f, lambda tmp, df=df: df.to_parquet(tmp))
             frames.append(df)
     if not frames:
         return []
@@ -149,9 +160,13 @@ def load_history_light(symbol: str, interval: str, days: int, cache_dir: Path, m
     for k in range(days, -1, -1):
         day = today - timedelta(days=k)
         f = cache / f"{day.isoformat()}.json"
+        batch = None
         if f.exists() and day != today:
-            batch = json.loads(f.read_text(encoding="utf-8"))
-        else:
+            try:
+                batch = json.loads(f.read_text(encoding="utf-8"))
+            except ValueError:
+                f.unlink(missing_ok=True)
+        if batch is None:
             start = int(datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp() * 1000)
             try:
                 batch = fetch_klines_raw(symbol, interval, start, min(start + 86_400_000 - 1, now_ms), rest_base, market)
@@ -159,7 +174,7 @@ def load_history_light(symbol: str, interval: str, days: int, cache_dir: Path, m
                 log.warning("REST klines unavailable for %s %s %s (%s); skipping that day", symbol, interval, day, e)
                 continue
             if day != today and batch:
-                f.write_text(json.dumps(batch), encoding="utf-8")
+                _atomic_write(f, lambda tmp, b=batch: tmp.write_text(json.dumps(b), encoding="utf-8"))
         for r in batch:
             rows[int(r[0])] = r
     out = []

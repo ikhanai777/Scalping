@@ -7,7 +7,7 @@ from typing import Any, Callable
 from ..models import Candidate, Signal
 from ..sim import Costs
 from ..strategies.base import Context
-from .store import StatsStore, strategy_id
+from .store import StatsStore, slice_key, strategy_id
 
 FAMILY_WEIGHTS = {"trend": 20, "momentum": 10, "flow": 25, "book": 15, "location": 15,
                   "derivatives": 10, "sentiment": 5}
@@ -33,6 +33,7 @@ class SignalEngine:
         self.coin_sentiment = coin_sentiment
         self.risk_gate = risk_gate
         self.regimes = regimes or {}
+        self.roles: dict[str, str] = {}
         self.rejected: list[dict] = []
 
     # ------------------------------------------------------------------------------------
@@ -58,20 +59,39 @@ class SignalEngine:
             if r:
                 out.append(r)
         first = c.targets[0].price if c.targets else c.entry
-        cost_px = self.costs.round_trip() * c.entry
+        cost_px = self.costs.round_trip(c.entry_type == "limit") * c.entry
         if abs(first - c.entry) < cfg.get("min_target_cost_multiple", 3.0) * cost_px:
             out.append("target < 3x round-trip cost")
         sid = strategy_id(c.strategy)
-        if sid in self.stats.shadow:
-            out.append(f"strategy degraded: {self.stats.shadow[sid]}")
+        shadow = self.stats.is_shadow(slice_key(c.strategy, c.tf))
+        if shadow:
+            out.append(f"strategy degraded: {shadow}")
         allowed = self.regimes.get(sid)
         if allowed and ctx is not None:
             reg = ctx.ind.regime()
             if reg not in allowed and reg != "warming_up":
                 out.append(f"regime {reg} not in {allowed}")
-        if ctx is not None and cfg.get("btc_follower_mode", "penalty") == "veto" and self._btc_opposes(c, ctx):
+        tf_cfg = cfg.get("trend_filter") or {}
+        if ctx is not None and (cfg.get("btc_follower_mode", "penalty") == "veto" or tf_cfg.get("enabled")) \
+                and self._btc_opposes(c, ctx):
             out.append("BTC follower against BTC trend")
+        if ctx is not None and tf_cfg.get("enabled"):
+            out += self._trend_filter(c, ctx, tf_cfg)
         return out
+
+    def _trend_filter(self, c: Candidate, ctx: Context, tf_cfg: dict) -> list[str]:
+        """Don't trade against a confirmed higher-timeframe trend; trend-following strategies also need
+        a confirmed trend in their direction on at least one filter timeframe."""
+        d = 1 if c.side == "LONG" else -1
+        tfs = tf_cfg.get("tfs", ["5m", "15m"])
+        confirmed = {tf: tc.direction for tf in tfs if (tc := ctx.trend.get(tf)) is not None and tc.state in (2, 3)}
+        against = [tf for tf, x in confirmed.items() if x == -d]
+        if against:
+            return [f"against confirmed {'/'.join(against)} trend"]
+        role = self.roles.get(strategy_id(c.strategy), "follow")
+        if role == "follow" and not any(x == d for x in confirmed.values()):
+            return [f"no confirmed {'/'.join(tfs)} trend in trade direction"]
+        return []
 
     def _btc_opposes(self, c: Candidate, ctx: Context) -> bool:
         cp = ctx.coupling
@@ -148,7 +168,7 @@ class SignalEngine:
             p, drivers = self.model.predict(sid, c, ctx, conf, parts)
             if p is not None:
                 return p, None, "model", drivers
-        st = self.stats.combined(c.strategy)
+        st = self.stats.combined(slice_key(c.strategy, c.tf))
         if st.n >= self.cfg.get("min_samples_for_probability", 30):
             return st.p_win(), st.ci(), "stats", []
         return None, None, "none", []
@@ -164,8 +184,8 @@ class SignalEngine:
         else:
             conf, parts = 60.0, {}
         p, ci, src, drivers = self.probability(c, ctx, conf, parts)
-        st = self.stats.combined(c.strategy)
-        cost_r = self.costs.round_trip() * c.entry / c.risk if c.risk else 0.0
+        st = self.stats.combined(slice_key(c.strategy, c.tf))
+        cost_r = self.costs.round_trip(c.entry_type == "limit") * c.entry / c.risk if c.risk else 0.0
         if st.n >= 10:
             avg_win, avg_loss = st.avg_win(), st.avg_loss()   # stats R are already net of costs
             cost_adj = 0.0
@@ -183,6 +203,13 @@ class SignalEngine:
             if p < self.cfg.get("min_p_win", 0.5) or ev <= 0:
                 self._reject(c, [f"p_win {p:.2f}, EV {ev:+.2f}R after costs"])
                 return None
+            # "Validated" needs statistical evidence, not just a positive average: the 90% confidence
+            # interval of the expectancy must lie above zero. Otherwise show it as unproven.
+            if src == "stats" and self.cfg.get("require_positive_ci", True) and st.expectancy_ci()[0] <= 0:
+                validated, src = False, "stats (unproven)"
+                if not self.cfg.get("show_unvalidated", True):
+                    self._reject(c, ["positive expectancy not yet statistically significant"])
+                    return None
         elif not self.cfg.get("show_unvalidated", True):
             self._reject(c, ["strategy has no validated statistics yet"])
             return None
@@ -214,3 +241,4 @@ class SignalEngine:
 
     def regimes_from(self, strategies: dict[str, Any]) -> None:
         self.regimes = {sid: s.regimes for sid, s in strategies.items() if getattr(s, "regimes", ())}
+        self.roles = {sid: getattr(s, "trend_role", "follow") for sid, s in strategies.items()}

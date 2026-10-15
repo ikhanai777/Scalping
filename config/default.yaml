@@ -39,7 +39,8 @@ signals:
   min_confluence: 55
   min_p_win: 0.4                # per-signal floor; EV after costs must also be > 0
   min_samples_for_probability: 30
-  show_unvalidated: true        # show grey "unvalidated" signals before a strategy has stats
+  show_unvalidated: true        # show grey "unvalidated"/"unproven" signals (no stats yet, or edge not significant)
+  require_positive_ci: true     # "validated" = 90% confidence interval of expectancy (net of costs) above zero
   min_target_cost_multiple: 3.0
   max_spread_bps: 8.0
   stale_data_seconds: 5
@@ -47,6 +48,15 @@ signals:
   macro_block_before_min: 15
   macro_block_after_min: 30
   primary_tf: "1m"
+  # Entries: "market" (taker, pays spread/slippage) or "maker" (resting limit order; fills only when price
+  # trades through it, unfilled orders expire as "missed"). See docs/IMPLEMENTATION.md for measured effects.
+  entry_mode: market
+  maker_offset_atr: 0.0         # limit price this many ATRs better than the signal price
+  maker_expiry_bars: 2          # signal-timeframe bars the limit order rests before it is cancelled
+  maker_through_bps: 1.0        # price must trade this far through the limit to count as filled
+  trend_filter:                 # never trade against a confirmed higher-timeframe trend
+    enabled: true               # measured: fewer, less-losing signals in- and out-of-sample (docs/IMPLEMENTATION.md)
+    tfs: ["5m", "15m"]          # trend-following strategies also need one confirmed in their direction
   strategies:
     S1_trend_pullback: {enabled: true}
     S2_vwap_reversion: {enabled: true}

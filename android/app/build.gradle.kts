@@ -16,8 +16,8 @@ android {
         applicationId = "com.scalping.terminal"
         minSdk = 24
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
         ndk {
             // 64-bit ARM covers practically every phone from the last ~8 years and keeps the APK small.
             // Add "x86_64" for emulators.

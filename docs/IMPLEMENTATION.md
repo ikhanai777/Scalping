@@ -86,16 +86,61 @@ Futures fees (0.05% taker) plus 2 bps slippage per side, 8,573 trades. The saved
 None pass the gates. Splitting by timeframe, the gross edge before costs ranges from −0.07R to +0.21R,
 and costs are still 0.10–0.30R per trade at these stop distances. The one positive slice is
 **S4 liquidity sweep on 15m: +0.02R net, 58% win rate, 184 trades**. That is not statistically
-significant, but it is the best candidate for further work. Statistics are currently pooled per
-strategy, not per timeframe, so that slice is still suppressed live.
+significant, and the October experiment below shows it does not hold out of sample.
 
 Trend continuation after CONFIRMED (≥ 2 ATR beyond the confirmation price) was 52–57% across
 timeframes over 60 days.
 
+## Accuracy experiment: maker entries, per-timeframe stats, trend filter (2026-10-15)
+
+Three changes were tested on the same 60-day futures window (6 majors, 2026-08-04 → 2026-10-02):
+
+- **Maker entries** (`signals.entry_mode: maker`): the entry is a resting limit order at the signal price.
+  It fills only if price trades 1 bp *through* it, the fill bar cannot also count a target, and the
+  order is cancelled ("missed", 0R, excluded from stats) after 2 signal-timeframe bars.
+- **Per strategy × timeframe statistics**: the signal engine looks up `strategy|tf`, so a good 15m
+  version of a strategy is no longer blocked by a bad 1m version.
+- **Trend filter** (`signals.trend_filter`): never trade against a CONFIRMED/MATURE 5m or 15m trend.
+  Trend-following strategies also need one in their direction, and BTC followers may not trade against
+  BTC's confirmed trend.
+
+Slices were picked on that window and then checked on data no run had touched: the same coins over
+2026-10-03 → 10-15 ("time"), and 6 other coins (ADA, LINK, AVAX, LTC, DOT, TRX) over the 60 days ("coins").
+
+| Variant | In-sample trades | In-sample R/trade | Time OOS R/trade | Coins OOS R/trade |
+|---|---|---|---|---|
+| A market, no filter (baseline) | 8,573 | −0.229 | — | — |
+| B maker, no filter | 13,954 (fill 91%) | −0.240 | — | — |
+| C market + trend filter | 3,781 | −0.204 | −0.200 (542) | −0.214 (4,991) |
+| D maker + trend filter | 6,081 (fill 92%) | −0.221 | −0.213 (947) | −0.213 (7,241) |
+
+Findings:
+
+- **Trend filter: small, consistent improvement.** It loses less in-sample and in both out-of-sample
+  tests, with about half the trades. Most slices improve, e.g. S1 15m −0.175 → −0.058R and S9 5m −0.197 →
+  −0.120R. **Enabled by default.**
+- **Maker entries: no net benefit.** Only the entry gets cheaper (stops remain taker + slippage), and
+  limit orders fill mostly when price moves against them (adverse selection). The extra cheap setups
+  that pass the cost filter add more losing trades. Kept as an option, default `market`.
+- **No strategy × timeframe slice is robust.** The best in-sample slice, S3 squeeze 15m with maker + filter
+  (+0.16R, 73 trades), scored +0.06R on 13 trades in the time test and −0.07R on 55 trades on other coins.
+  With 4 variants × 19 slices tested, a few in-sample positives are expected by chance.
+- With all evidence pooled (12 coins, 60 + 13 days), **every slice has a negative average**
+  (`results/stats-futures-60d.json`), so the live engine suppresses them all.
+- "Validated" now also requires the **90% confidence interval of expectancy above zero**
+  (`signals.require_positive_ci`). Slices with a positive but unproven average show as grey "unproven".
+
+**Conclusion:** filtering and cheaper execution don't create an edge that the entry rules lack. These
+classic indicator entries have no measurable edge on liquid majors at 1m–15m after costs. Further
+accuracy needs *new information* (order flow from recorded book/trade data, futures positioning,
+the ML filter trained on that) or different holding periods. More tuning of these rules on the same
+data would mostly overfit.
+
 ## Next steps (suggested order)
 
-1. Key statistics per strategy × timeframe (so slices like S4-15m can pass on their own), then train the meta-model (`scalper train --market futures`) to filter low-quality setups.
-2. Enable `storage.record_trades` to build order-book/trade history, then backtest S5 and order-flow features.
-3. Add volume profile, footprint and liquidity heatmap to the chart.
-4. Wire the Binance executor behind an explicit testnet-first flow with a confirmation UI.
-5. Add parameter sweeps with deflated-Sharpe/PBO reporting, and PSI drift detection for scheduled retraining.
+1. Record order-book/trade data (`storage.record_trades`) for a few weeks, then test order-flow features and S5 — the most likely source of short-horizon edge.
+2. Run the same experiment on 1h/4h holding periods, where costs are a much smaller share of each move.
+3. Train the ML meta-model (`scalper train --market futures --days 180`) on more coins, once the features include order flow and futures positioning.
+4. Add volume profile, footprint and liquidity heatmap to the chart.
+5. Wire the Binance executor behind an explicit testnet-first flow with a confirmation UI.
+6. Add parameter sweeps with deflated-Sharpe/PBO reporting, and PSI drift detection for scheduled retraining.

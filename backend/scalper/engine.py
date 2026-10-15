@@ -20,8 +20,8 @@ from .indicators.bundle import IndicatorBundle
 from .models import TF_MS, Bar, Signal, Trade, now_ms
 from .news import NewsService
 from .signals import SignalEngine, StatsStore
-from .signals.store import strategy_id
-from .sim import Costs, TradeSim
+from .signals.store import slice_key, strategy_id
+from .sim import Costs, TradeSim, as_maker
 from .storage import ParquetRecorder, Store
 from .strategies import BAR_STRATEGIES, Context, build_strategies
 from .strategies.builtin import BtcCatchup, OrderflowMomentum, PumpMomentum
@@ -63,7 +63,7 @@ def _bootstrap_job(cfg: dict, symbols: list[str], days: int, ddir: str) -> dict:
         except Exception:  # noqa: BLE001
             continue
     res = Backtester(cfg, cfg.get("execution", {}).get("market", "spot")).run(data)
-    return {"by_strategy": res.by_strategy(), "metrics": res.metrics(),
+    return {"by_slice": res.by_slice(), "metrics": res.metrics(slices=True),
             "trend": {tf: s.summary() for tf, s in res.trend_stats.items()},
             "symbols": list(data), "days": days}
 
@@ -406,8 +406,7 @@ class Engine:
                 # "spawn" everywhere = the Windows behaviour, so it is exercised on every platform.
                 with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as pool:
                     res = await loop.run_in_executor(pool, _bootstrap_job, *args)
-            for sid, rs in res["by_strategy"].items():
-                self.stats.set_backtest(sid, rs)
+            self.stats.replace_backtest(res["by_slice"])
             self.stats.save()
             self.backtest_report = {"status": "done", **{k: res[k] for k in ("metrics", "trend", "symbols", "days")}}
         except Exception as e:  # noqa: BLE001
@@ -556,10 +555,10 @@ class Engine:
                 sig.status = "triggered"
             if done:
                 sig.status = {"stop": "stopped", "trailing_stop": "trail_exit", "breakeven": "breakeven",
-                              "time_stop": "time_stopped", "expired": "expired"}.get(sim.exit_reason, "tp")
-                sig.outcome_r = round(sim.r, 3)
-                if sim.exit_reason != "expired":
-                    self.stats.add(sig.candidate.strategy, sim.r, "live")
+                              "time_stop": "time_stopped", "expired": "expired", "missed": "missed"}.get(sim.exit_reason, "tp")
+                sig.outcome_r = None if sim.exit_reason in ("expired", "missed") else round(sim.r, 3)
+                if sim.exit_reason not in ("expired", "missed"):
+                    self.stats.add(slice_key(sig.candidate.strategy, sig.candidate.tf), sim.r, "live")
                 del self.signal_sims[sid]
                 self.signals.pop(sid, None)
             if sig.status != prev or done:
@@ -573,13 +572,24 @@ class Engine:
             if s.candidate.symbol == c.symbol and strategy_id(s.candidate.strategy) == strategy_id(c.strategy) \
                     and s.candidate.tf == c.tf:
                 return None                     # one active signal per symbol/strategy/timeframe
+        sc = self.cfg.signals
+        maker = (sc.get("entry_mode", "market") == "maker" and c.tf != "1s"
+                 and strategy_id(c.strategy) not in ("S5_orderflow_momentum", "S11_pump_momentum"))
+        if maker and ctx is not None:
+            c = as_maker(c, ctx.htf[c.tf].v.get("atr") if c.tf in ctx.htf else ctx.ind.v.get("atr"),
+                         sc.get("maker_offset_atr", 0.0))
         age = (now_ms() - self._last_msg_ms.get(c.symbol, now_ms())) / 1000
         sig = self.signal_engine.evaluate(c, ctx, {"data_age_s": age})
         if sig is None:
             return None
         self.signals[sig.id] = sig
-        self.signal_sims[sig.id] = TradeSim(c, self.costs, fill_price=c.entry, entry_time=c.ts)
-        sig.status = "triggered"
+        if c.entry_type == "limit":            # resting limit order: tracked until filled or missed
+            self.signal_sims[sig.id] = TradeSim(c, self.costs, maker_through=sc.get("maker_through_bps", 1.0) / 10_000,
+                                                maker_expiry_bars=sc.get("maker_expiry_bars", 2))
+            sig.status = "pending"
+        else:
+            self.signal_sims[sig.id] = TradeSim(c, self.costs, fill_price=c.entry, entry_time=c.ts)
+            sig.status = "triggered"
         body = sig.to_json()
         self.recent_signals.append(sig.id)
         self.store.put("signals", sig.id, c.ts, c.symbol, body)
